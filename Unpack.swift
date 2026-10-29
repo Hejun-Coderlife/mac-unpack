@@ -25,10 +25,13 @@ enum Pref {
     static let quitAfter = "quitAfter"   // 双击压缩包打开时，全部解完自动退出
     static let rememberPw = "rememberPw" // 输对的密码记进密码本
     static let autoUpdate = "autoUpdate" // 每天看一次 GitHub 上有没有新版本
+    static let format = "format"         // 拖进来压缩时用的格式：zip / 7z
+    static let level = "level"           // 压缩程度：0 只打包 / 1 快 / 5 标准 / 9 最小
     static let lastCheck = "lastUpdateCheck", latestVersion = "latestVersion", latestAsset = "latestAsset"
     static func register() {
         UserDefaults.standard.register(defaults: [dest: "", trashAfter: false, cleanJunk: true, reveal: true,
-                                                  nestedTar: true, quitAfter: true, rememberPw: true, autoUpdate: true])
+                                                  nestedTar: true, quitAfter: true, rememberPw: true, autoUpdate: true,
+                                                  format: "zip", level: 5])
     }
     static func on(_ k: String) -> Bool { UserDefaults.standard.bool(forKey: k) }
 }
@@ -69,11 +72,13 @@ struct Entry: Identifiable, Hashable {
     let size: Int64
     let isDir: Bool
     let encrypted: Bool
+    var method = ""        // 比如 "AES-256 Deflate"：往加密 zip 里加文件时沿用同一种加密
 }
 
 struct Listing {
     var type = ""
     var entries: [Entry] = []
+    var headerEncrypted = false   // 文件名也加密了（7z 的「加密文件名」）：往里加文件时要保持
     var anyEncrypted: Bool { entries.contains { $0.encrypted } }
     var totalSize: Int64 { entries.reduce(0) { $0 + $1.size } }
 }
@@ -207,7 +212,7 @@ enum SevenZip {
             listing.entries.append(Entry(id: listing.entries.count, path: path,
                                          size: Int64(f["Size"] ?? "") ?? 0,
                                          isDir: f["Folder"] == "+" || (f["Attributes"] ?? "").hasPrefix("D"),
-                                         encrypted: f["Encrypted"] == "+"))
+                                         encrypted: f["Encrypted"] == "+", method: f["Method"] ?? ""))
         }
         return listing
     }
@@ -397,8 +402,8 @@ enum Engine {
         func book() -> [String] { if saved == nil { saved = Passwords.all() }; return saved! }
         switch SevenZip.list(arc, password: given ?? "") {
         case .failure(.wrongPassword):   // 文件名也加密了（7z/rar 的「加密文件名」）
-            if given != nil { return .failure(.wrongPassword) }
-            for c in book() { if case .success(let l) = SevenZip.list(arc, password: c) { return .success((l, c)) } }
+            if let given { return SevenZip.list(arc, password: given).map { var l = $0; l.headerEncrypted = true; return (l, given) } }
+            for c in book() { if case .success(var l) = SevenZip.list(arc, password: c) { l.headerEncrypted = true; return .success((l, c)) } }
             return .failure(.needPassword)
         case .failure(let e): return .failure(e)
         case .success(let l):
