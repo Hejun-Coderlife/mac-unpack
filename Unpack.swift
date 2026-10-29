@@ -26,7 +26,7 @@ enum Pref {
     static let rememberPw = "rememberPw" // 输对的密码记进密码本
     static func register() {
         UserDefaults.standard.register(defaults: [dest: "", trashAfter: false, cleanJunk: true, reveal: true,
-                                                  nestedTar: true, quitAfter: false, rememberPw: true])
+                                                  nestedTar: true, quitAfter: true, rememberPw: true])
     }
     static func on(_ k: String) -> Bool { UserDefaults.standard.bool(forKey: k) }
 }
@@ -909,14 +909,13 @@ struct ContentView: View {
         ZStack {
             Theme.bg.ignoresSafeArea()
             VStack(spacing: 0) {
+                if queue.jobs.isEmpty { Intro() } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         Text(appName).font(.system(size: 30, weight: .bold)).foregroundStyle(Theme.heading)
                             .padding(.bottom, 10)
                         Rule().padding(.bottom, 18)
-                        if queue.jobs.isEmpty {
-                            Intro()
-                        } else {
+                        do {
                             para(L("继续把压缩包拖进来，或者 [选择文件](unpack://open)。", "Drop more archives, or [choose files](unpack://open)."))
                                 .font(.system(size: 14)).foregroundStyle(Theme.secondary).padding(.bottom, 6)
                             ForEach(queue.jobs) { JobRow(job: $0, browse: { browsing = $0 }) }
@@ -927,6 +926,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .scrollContentBackground(.hidden)
+                }
                 StatusBar()
             }
             if targeted { DropOverlay().transition(.opacity) }
@@ -946,29 +946,25 @@ struct ContentView: View {
     }
 }
 
-/// 空窗口时的说明，排成一页文档的样子
+/// 空窗口：和宣传视频结尾那张卡一样——图标 + 名字 + 一句话。格式、密码、乱码这些都是自动的，不用在这里讲
 struct Intro: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            para(L("把压缩包拖进这个窗口的任意位置就会解开，也可以 [选择文件](unpack://open)。",
-                   "Drop an archive anywhere in this window to extract it, or [choose a file](unpack://open)."))
-                .font(.system(size: 16)).lineSpacing(5)
-            Text(L("支持 zip、7z、rar、tar、gz、bz2、xz、zst、iso、cab，以及分卷压缩包。",
-                   "Works with zip, 7z, rar, tar, gz, bz2, xz, zst, iso, cab and split archives."))
-                .font(.system(size: 15)).foregroundStyle(Theme.secondary).lineSpacing(5)
-            HStack(spacing: 14) {
-                Rectangle().fill(Theme.quoteBar).frame(width: 4)
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(L("加密的包，先用你存过的密码自动试。", "Encrypted archives are tried with your saved passwords first."))
-                    Text(L("Windows 上打的包，中文文件名自动修好乱码。", "Garbled filenames from Windows zips are fixed automatically."))
-                    Text(L("分卷包拖哪一卷都行；.tar.gz 一步解到底。", "Drop any part of a split archive; .tar.gz unpacks in one step."))
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 22) {
+                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 84, height: 84)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(appName).font(.system(size: 34, weight: .semibold)).foregroundStyle(Theme.heading).padding(.bottom, 6)
+                    Rule().frame(width: 200).padding(.bottom, 10)
+                    Text(L("拖进来，就解开。", "Drop it in. It opens.")).font(.system(size: 15, weight: .medium)).padding(.bottom, 6)
+                    Text(L("zip · 7z · rar · 分卷 · 加密包 · 乱码修复", "zip · 7z · rar · split · encrypted · garbled names"))
+                        .font(.system(size: 11)).foregroundStyle(Theme.faint)
                 }
-                .font(.system(size: 15)).foregroundStyle(Theme.secondary).padding(.vertical, 2)
             }
-            .fixedSize(horizontal: false, vertical: true)
-            Text(L("拖进文件夹或普通文件，则压缩成 zip。", "Drop folders or plain files to make a zip."))
+            para(L("[选择文件](unpack://open)　⌘O", "[Choose a file](unpack://open)　⌘O"))
                 .font(.system(size: 13)).foregroundStyle(Theme.faint)
+                .padding(.leading, 84 + 22)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -1152,7 +1148,7 @@ struct SettingsView: View {
     @AppStorage(Pref.nestedTar) private var nestedTar = true
     @AppStorage(Pref.reveal) private var reveal = true
     @AppStorage(Pref.trashAfter) private var trashAfter = false
-    @AppStorage(Pref.quitAfter) private var quitAfter = false
+    @AppStorage(Pref.quitAfter) private var quitAfter = true
     @AppStorage(Pref.rememberPw) private var rememberPw = true
     @State private var saved = Passwords.all().count
 
