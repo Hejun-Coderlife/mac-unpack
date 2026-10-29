@@ -140,7 +140,7 @@ else:
 
 # 压缩选项：7z + 密码 + 加密文件名 + 分卷，再解回来对一遍
 big = os.path.join(FIX, "optsrc"); write_tree(big, TREE)
-with open(os.path.join(big, "big.bin"), "wb") as f: f.write(os.urandom(3_000_000))
+with open(os.path.join(big, "large.bin"), "wb") as f: f.write(os.urandom(3_000_000))   # 别叫 big.bin：下面 RAR 用例 -r 会把它也收进去
 run("compress-7z-split", [big], D("opts"), pw="abc", extra={"UNPACK_FORMAT": "7z", "UNPACK_LEVEL": "9", "UNPACK_SPLIT": "1"})
 vols = sorted(n for n in os.listdir(D("opts")) if n.startswith("optsrc.7z."))
 if len(vols) < 3: failures.append(f"compress-7z-split: expected 3+ volumes, got {vols}")
