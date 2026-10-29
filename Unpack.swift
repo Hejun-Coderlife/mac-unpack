@@ -122,11 +122,12 @@ enum SevenZip {
     struct Result { var code: Int32; var out: String; var err: String; var all: String { out + "\n" + err } }
 
     /// 跑一次 7zz；onOut 收到标准输出的每一块（进度百分比在里面）
-    static func run(_ args: [String], exe: String = bin, runner: Runner? = nil,
+    static func run(_ args: [String], exe: String = bin, cwd: URL? = nil, runner: Runner? = nil,
                     onOut: ((String) -> Void)? = nil, onErr: ((String) -> Void)? = nil) -> Result {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: exe)
         p.arguments = args
+        if let cwd { p.currentDirectoryURL = cwd }   // 往包里加文件：在暂存目录里跑，传相对路径，包里就是这个路径
         // 从访达启动时没有 LANG，7-Zip 会按 C 区域处理文件名，中文全变问号——强制 UTF-8
         var env = ProcessInfo.processInfo.environment
         env["LANG"] = "en_US.UTF-8"; env["LC_ALL"] = "en_US.UTF-8"
@@ -370,6 +371,28 @@ enum Archive {
     }
 }
 
+// ---- 压缩选项：直接拖进来就用设置里的格式和程度；按住 ⌥ 拖进来（或 ⌘N）可以另设名字、密码、分卷 ----
+struct CompressOptions {
+    var name = ""            // 空 = 按拖进来的东西起名
+    var format = "zip"       // zip / 7z
+    var level = 5            // 0 只打包 / 1 快 / 5 标准 / 9 最小
+    var password = ""
+    var encryptNames = true  // 7z 才有：连文件名也加密，不输密码看不到里面有什么
+    var splitMB = 0          // 0 = 不分卷
+
+    static func fromPrefs() -> CompressOptions {
+        let d = UserDefaults.standard
+        return CompressOptions(format: d.string(forKey: Pref.format) == "7z" ? "7z" : "zip", level: d.integer(forKey: Pref.level))
+    }
+    static func defaultName(_ srcs: [URL]) -> String {
+        srcs.count == 1 ? srcs[0].lastPathComponent : L("归档", "Archive")
+    }
+    static let levels: [(Int, String)] = [(0, L("只打包，不压缩", "Store only")), (1, L("快", "Fast")),
+                                          (5, L("标准", "Normal")), (9, L("最小（慢）", "Smallest (slow)"))]
+    static let splits: [(Int, String)] = [(0, L("不分卷", "No split")), (25, L("每卷 25 MB（邮件附件）", "25 MB parts (email)")),
+                                          (100, "100 MB"), (1000, "1 GB"), (4000, L("4 GB（U 盘 FAT32）", "4 GB (FAT32 drives)"))]
+}
+
 /// 同名已存在就加编号：资料 → 资料 2 → 资料 3
 func uniqueURL(_ u: URL) -> URL {
     let fm = FileManager.default
@@ -402,11 +425,13 @@ enum Engine {
         func book() -> [String] { if saved == nil { saved = Passwords.all() }; return saved! }
         switch SevenZip.list(arc, password: given ?? "") {
         case .failure(.wrongPassword):   // 文件名也加密了（7z/rar 的「加密文件名」）
-            if let given { return SevenZip.list(arc, password: given).map { var l = $0; l.headerEncrypted = true; return (l, given) } }
+            if given != nil { return .failure(.wrongPassword) }
             for c in book() { if case .success(var l) = SevenZip.list(arc, password: c) { l.headerEncrypted = true; return .success((l, c)) } }
             return .failure(.needPassword)
         case .failure(let e): return .failure(e)
-        case .success(let l):
+        case .success(var l):
+            // 用手输的密码读出来的：不带密码读不读得出，决定了文件名是不是也加密了
+            if let given, !given.isEmpty, case .failure(.wrongPassword) = SevenZip.list(arc, password: "") { l.headerEncrypted = true }
             guard let probe = l.entries.filter({ $0.encrypted && !$0.isDir }).min(by: { $0.size < $1.size }) else {
                 return .success((l, given))
             }
@@ -553,17 +578,36 @@ enum Engine {
         })
     }
 
-    static func compress(_ srcs: [URL], runner: Runner, progress: @escaping (Progress) -> Void) -> Swift.Result<URL, ZError> {
+    static func compress(_ srcs: [URL], options o: CompressOptions, runner: Runner, progress: @escaping (Progress) -> Void) -> Swift.Result<URL, ZError> {
+        let fm = FileManager.default
         let parent = destDir(for: srcs[0])
-        let name = srcs.count == 1 ? srcs[0].lastPathComponent : L("归档", "Archive")
-        let out = uniqueURL(parent.appendingPathComponent(name + ".zip"))
+        let name = o.name.isEmpty ? CompressOptions.defaultName(srcs) : o.name
+        // 分卷时实际文件是 名字.zip.001、.002…：编号要躲开这些已经存在的
+        var out = parent.appendingPathComponent(name + "." + o.format)
+        for i in 2... where fm.fileExists(atPath: out.path) || fm.fileExists(atPath: out.path + ".001") {
+            out = parent.appendingPathComponent("\(name) \(i).\(o.format)")
+        }
         let total = srcs.reduce(Int64(0)) { $0 + sizeOf($1) }
-        // -mcu=on：文件名一律存 UTF-8 并打标记，发到 Windows 上也不乱码；不带 Mac 的 .DS_Store 和 ._ 资源文件
-        let args = ["a", "-tzip", "-mcu=on", "-mx=5", "-bsp1", "-bso0", "-bse2", "-sccUTF-8",
-                    "-xr!.DS_Store", "-xr!__MACOSX", "-xr!._*", out.path] + srcs.map(\.path)
+        // zip 用 -mcu=on：文件名一律存 UTF-8 并打标记，发到 Windows 上也不乱码；不带 Mac 的 .DS_Store 和 ._ 资源文件
+        var args = ["a", "-t" + o.format, "-mx=\(o.level)", "-bsp1", "-bso0", "-bse2", "-sccUTF-8",
+                    "-xr!.DS_Store", "-xr!__MACOSX", "-xr!._*"]
+        if o.format == "zip" { args.append("-mcu=on") }
+        if !o.password.isEmpty {
+            args.append("-p" + o.password)
+            args.append(o.format == "zip" ? "-mem=AES256" : "-mhe=" + (o.encryptNames ? "on" : "off"))
+        }
+        if o.splitMB > 0 { args.append("-v\(o.splitMB)m") }
+        args += [out.path] + srcs.map(\.path)
         let r = run7z(args, total: total, label: L("压缩", "Compressing"), runner: runner, progress: progress)
-        if r.code != 0 { try? FileManager.default.removeItem(at: out); return .failure(SevenZip.classify(r, runner: runner)) }
-        return .success(out)
+        let parts = Archive.volumes(URL(fileURLWithPath: out.path + ".001"))
+        if r.code != 0 {
+            try? fm.removeItem(at: out)
+            if o.splitMB > 0 { parts.forEach { try? fm.removeItem(at: $0) } }
+            return .failure(SevenZip.classify(r, runner: runner))
+        }
+        // 设了分卷但没超过一卷：7-Zip 也会出一个 .001，改回正常名字
+        if o.splitMB > 0, parts.count == 1 { try? fm.moveItem(at: parts[0], to: out) }
+        return .success(o.splitMB > 0 && parts.count > 1 ? parts[0] : out)
     }
 
     static let pctRegex = try! NSRegularExpression(pattern: #"(\d+)%"#)
@@ -620,6 +664,73 @@ enum Engine {
     }
 }
 
+// ---- 直接改压缩包：加文件、删文件、改名（7-Zip 先写临时包再换掉原包，中途失败原包不动）----
+enum Editor {
+    /// 改不了就返回原因；nil = 能改
+    static func blocker(_ arc: URL, listing: Listing, fixer: NameFixer) -> String? {
+        let t = listing.type.lowercased()
+        if !["zip", "7z", "tar", "wim"].contains(t) {
+            return L("\(listing.type) 格式只能看、不能改（能改的是 zip / 7z / tar）", "\(listing.type) can be viewed but not edited (zip / 7z / tar can)")
+        }
+        if Archive.volumes(arc).count > 1 { return L("分卷包只能看、不能改", "Split archives can't be edited") }
+        if fixer.charset != nil { return L("这个包的文件名是旧编码（\(fixer.charset!)），改了会乱码，只能看", "Names use a legacy encoding (\(fixer.charset!)); editing would garble them") }
+        if !FileManager.default.isWritableFile(atPath: arc.path) { return L("这个文件是只读的，不能改", "The file is read-only") }
+        return nil
+    }
+
+    /// 原包加了密码：新加进去的也用同一个密码、同一种加密
+    static func cryptArgs(_ listing: Listing, password: String?) -> [String] {
+        let t = listing.type.lowercased()
+        var a = t == "zip" ? ["-mcu=on"] : []
+        guard let pw = password, !pw.isEmpty, listing.anyEncrypted || listing.headerEncrypted else { return a }
+        a.append("-p" + pw)
+        if t == "zip", listing.entries.contains(where: { $0.method.contains("AES") }) { a.append("-mem=AES256") }
+        if t == "7z", listing.headerEncrypted { a.append("-mhe=on") }
+        return a
+    }
+
+    /// 把 files 加到包里的 dir 文件夹下（dir 为空 = 最外层）；同名的会被替换
+    static func add(_ files: [URL], into dir: String, arc: URL, listing: Listing, password: String?, runner: Runner) -> Swift.Result<Void, ZError> {
+        let fm = FileManager.default
+        let stage = fm.temporaryDirectory.appendingPathComponent("unpack-add-\(UUID().uuidString.prefix(8))")
+        defer { try? fm.removeItem(at: stage) }
+        let target = dir.isEmpty ? stage : stage.appendingPathComponent(dir)
+        var rel: [String] = []
+        do {
+            try fm.createDirectory(at: target, withIntermediateDirectories: true)
+            for f in files {
+                try fm.copyItem(at: f, to: target.appendingPathComponent(f.lastPathComponent))   // APFS 上是克隆，不占空间、很快
+                rel.append(dir.isEmpty ? f.lastPathComponent : dir + "/" + f.lastPathComponent)
+            }
+        } catch { return .failure(.failed(error.localizedDescription)) }
+        let args = ["a", "-bso0", "-bse2", "-sccUTF-8", "-xr!.DS_Store", "-xr!__MACOSX", "-xr!._*"]
+            + cryptArgs(listing, password: password) + [arc.path] + rel
+        return check(SevenZip.run(args, cwd: stage, runner: runner), runner)
+    }
+
+    static func delete(_ paths: [String], arc: URL, listing: Listing, password: String?, runner: Runner) -> Swift.Result<Void, ZError> {
+        // 名字表 + -spd：名字里有 * ? [ 也按原样认，不当通配符；删文件夹会连里面的一起删
+        let lf = FileManager.default.temporaryDirectory.appendingPathComponent("unpack-del-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: lf) }
+        do { try paths.joined(separator: "\n").write(to: lf, atomically: true, encoding: .utf8) }
+        catch { return .failure(.failed(error.localizedDescription)) }
+        let args = ["d", "-bso0", "-bse2", "-sccUTF-8", "-spd", "-scsUTF-8"] + cryptArgs(listing, password: password) + [arc.path, "@" + lf.path]
+        return check(SevenZip.run(args, runner: runner), runner)
+    }
+
+    /// 改名（文件夹改名，里面的东西跟着走）
+    static func rename(_ path: String, to newName: String, arc: URL, listing: Listing, password: String?, runner: Runner) -> Swift.Result<Void, ZError> {
+        let parent = (path as NSString).deletingLastPathComponent
+        let new = parent.isEmpty ? newName : parent + "/" + newName
+        let args = ["rn", "-bso0", "-bse2", "-sccUTF-8"] + cryptArgs(listing, password: password) + [arc.path, path, new]
+        return check(SevenZip.run(args, runner: runner), runner)
+    }
+
+    private static func check(_ r: SevenZip.Result, _ runner: Runner) -> Swift.Result<Void, ZError> {
+        r.code == 0 ? .success(()) : .failure(SevenZip.classify(r, runner: runner))
+    }
+}
+
 // ---- 一个任务（一个压缩包，或者一批要压缩的文件）----
 final class Job: ObservableObject, Identifiable {
     enum Kind { case extract, compress }
@@ -628,6 +739,7 @@ final class Job: ObservableObject, Identifiable {
     let kind: Kind
     let sources: [URL]
     let selection: [String]?   // 只解其中几项（从「查看内容」里勾的）
+    let options: CompressOptions   // 压缩任务用
     @Published var state = State.waiting
     @Published var fraction = 0.0
     @Published var detail = ""
@@ -637,8 +749,8 @@ final class Job: ObservableObject, Identifiable {
     var listing: Listing?
     private var runner = Runner()
 
-    init(kind: Kind, sources: [URL], selection: [String]? = nil, password: String? = nil) {
-        self.kind = kind; self.sources = sources; self.selection = selection; self.password = password
+    init(kind: Kind, sources: [URL], selection: [String]? = nil, password: String? = nil, options: CompressOptions = .fromPrefs()) {
+        self.kind = kind; self.sources = sources; self.selection = selection; self.password = password; self.options = options
     }
 
     var title: String {
@@ -646,6 +758,13 @@ final class Job: ObservableObject, Identifiable {
         case .extract: return sources[0].lastPathComponent + (selection.map { L("（选中 \($0.count) 项）", " (\($0.count) selected)") } ?? "")
         case .compress: return sources.count == 1 ? sources[0].lastPathComponent : L("\(sources.count) 个项目", "\(sources.count) items")
         }
+    }
+    /// 标题后面的灰字：→ zip、→ 7z · 加密 · 分卷
+    var compressTag: String {
+        var t = "→ " + options.format
+        if !options.password.isEmpty { t += L(" · 加密", " · encrypted") }
+        if options.splitMB > 0 { t += L(" · 分卷", " · split") }
+        return t
     }
     var volumeCount: Int { kind == .extract ? Archive.volumes(sources[0]).count : 0 }
 
@@ -659,7 +778,7 @@ final class Job: ObservableObject, Identifiable {
         switch kind {
         case .compress:
             ui { self.detail = L("准备压缩…", "Preparing…") }
-            finish(Engine.compress(sources, runner: runner, progress: report))
+            finish(Engine.compress(sources, options: options, runner: runner, progress: report))
         case .extract:
             let arc = sources[0]
             ui { self.detail = L("读取内容…", "Reading…") }
@@ -933,12 +1052,37 @@ func selfTest(_ list: String) {
     for path in list.split(separator: ":") {
         let u = URL(fileURLWithPath: String(path))
         if !Archive.isArchive(u) {
-            let r = Engine.compress([u], runner: Runner()) { _ in }
+            // 压缩选项：UNPACK_FORMAT=7z UNPACK_LEVEL=9 UNPACK_PW=密码 UNPACK_SPLIT=分卷MB
+            var o = CompressOptions.fromPrefs()
+            if let f = env["UNPACK_FORMAT"] { o.format = f }
+            if let l = env["UNPACK_LEVEL"].flatMap(Int.init) { o.level = l }
+            if let p = env["UNPACK_PW"] { o.password = p }
+            if let s = env["UNPACK_SPLIT"].flatMap(Int.init) { o.splitMB = s }
+            let r = Engine.compress([u], options: o, runner: Runner()) { _ in }
             print("COMPRESS \(u.lastPathComponent) →", (try? r.get().path) ?? "\(r)")
             continue
         }
         let arc = Archive.firstVolume(u)
         let fixer = NameFixer(arc)
+        // 改包自测：UNPACK_EDIT="add 包里的文件夹 /本机/文件;rename 旧路径 新名字;delete 路径"（字段用 Tab 分开），改完列出内容
+        if let ops = env["UNPACK_EDIT"] {
+            for op in ops.split(separator: ";") {
+                guard case .success(let (l, pw)) = Engine.unlock(arc, given: env["UNPACK_PW"]) else { print("FAIL unlock"); break }
+                if let why = Editor.blocker(arc, listing: l, fixer: fixer) { print("BLOCKED \(why)"); break }
+                let f = op.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+                let r: Swift.Result<Void, ZError>
+                switch f[0] {
+                case "add": r = Editor.add(f.dropFirst(2).map { URL(fileURLWithPath: $0) }, into: f[1], arc: arc, listing: l, password: pw, runner: Runner())
+                case "rename": r = Editor.rename(f[1], to: f[2], arc: arc, listing: l, password: pw, runner: Runner())
+                default: r = Editor.delete(Array(f.dropFirst()), arc: arc, listing: l, password: pw, runner: Runner())
+                }
+                print("EDIT \(f[0]):", (try? r.get()) != nil ? "ok" : "\(r)")
+            }
+            if case .success(let (l, _)) = Engine.unlock(arc, given: env["UNPACK_PW"]) {
+                print("NOW enc=\(l.anyEncrypted) hdr=\(l.headerEncrypted)"); for e in l.entries { print("   ", e.path, e.method) }
+            }
+            continue
+        }
         switch Engine.unlock(arc, given: env["UNPACK_PW"]) {
         case .failure(let e): print("FAIL \(u.lastPathComponent): \(e.text)")
         case .success(let (l, pw)):
@@ -1108,7 +1252,7 @@ struct JobRow: View {
                     Text(job.title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.heading)
                         .lineLimit(1).truncationMode(.middle)
                     if job.volumeCount > 1 { Text(L("\(job.volumeCount) 卷", "\(job.volumeCount) parts")).foregroundStyle(Theme.faint) }
-                    if job.kind == .compress { Text(L("→ zip", "→ zip")).foregroundStyle(Theme.faint) }
+                    if job.kind == .compress { Text(job.compressTag).foregroundStyle(Theme.faint) }
                     Spacer(minLength: 0)
                     if hover && job.state != .working {
                         LinkButton(title: L("移除", "Remove"), color: Theme.faint) { withAnimation { JobQueue.shared.remove(job) } }
