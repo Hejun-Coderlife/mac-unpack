@@ -70,6 +70,8 @@ jobs:
           }
           New-Item -ItemType Directory shots | Out-Null
           $exe = (Resolve-Path "dist\Unpack\解压.exe").Path
+          New-Item -ItemType Directory "$env:APPDATA\Unpack" -Force | Out-Null
+          Set-Content "$env:APPDATA\Unpack\settings.json" '{"Reveal": false}'   # 截图时别弹资源管理器盖住窗口
           $p = Start-Process $exe -PassThru; Start-Sleep 6; Shot "1-empty"
           # 再开一次带参数：交给已经开着的窗口（单实例），一个能解的 + 一个要密码的
           New-Item -ItemType Directory demo | Out-Null
