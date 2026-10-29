@@ -158,10 +158,10 @@ jobs:
           if ((Get-ChildItem $d).Count -le $before) { throw "open command did not extract zip" }
           Stop-Process -Name Unpack -Force -ErrorAction SilentlyContinue
           # 覆盖升级（软件里点「更新」走的就是这条）：静默装同一个包 + /RELAUNCH=1，装完软件要自己重新打开
-          $p = Start-Process .\Unpack-Setup-x64.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/RELAUNCH=1" -PassThru -Wait
+          $p = Start-Process .\Unpack-Setup-x64.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/RELAUNCH=1", "/LOG=$env:TEMP\upgrade.log" -PassThru -Wait
           if ($p.ExitCode -ne 0) { throw "upgrade exit $($p.ExitCode)" }
-          Start-Sleep 5
-          if (!(Get-Process Unpack -ErrorAction SilentlyContinue)) { throw "not relaunched after upgrade" }
+          for ($i = 0; $i -lt 15 -and !(Get-Process Unpack -ErrorAction SilentlyContinue); $i++) { Start-Sleep 1 }
+          if (!(Get-Process Unpack -ErrorAction SilentlyContinue)) { Get-Content "$env:TEMP\upgrade.log" | Select-String -Pattern "Run|Filename|Process|exit|Error" ; throw "not relaunched after upgrade" }
           if ((Get-ItemProperty "HKCU:\Software\Classes\.rar").'(default)' -ne "Unpack.Archive") { throw "association lost after upgrade" }
           Shot "6-after-upgrade"
           Stop-Process -Name Unpack -Force -ErrorAction SilentlyContinue
