@@ -57,7 +57,8 @@ static class Theme
             case Button b: b.BackColor = Field; b.ForeColor = Text; b.FlatStyle = FlatStyle.Flat; b.FlatAppearance.BorderColor = QuoteBar; break;
             case CheckBox or RadioButton: root.ForeColor = Text; break;
             case ListView l:
-                if (l.IsHandleCreated) SetWindowTheme(l.Handle, "DarkMode_Explorer", null); else l.HandleCreated += (_, _) => SetWindowTheme(l.Handle, "DarkMode_Explorer", null);
+                // ItemsView 是资源管理器自己文件列表用的深色样式（Explorer 那个会画出浅色的列分隔线）
+                if (l.IsHandleCreated) SetWindowTheme(l.Handle, "DarkMode_ItemsView", null); else l.HandleCreated += (_, _) => SetWindowTheme(l.Handle, "DarkMode_ItemsView", null);
                 break;
             case ScrollableControl { AutoScroll: true } sc:
                 if (sc.IsHandleCreated) SetWindowTheme(sc.Handle, "DarkMode_Explorer", null); else sc.HandleCreated += (_, _) => SetWindowTheme(sc.Handle, "DarkMode_Explorer", null);

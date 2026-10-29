@@ -100,6 +100,7 @@ class BrowserForm : Form
         list.Columns.Add(L("大小", "Size"), 90, HorizontalAlignment.Right);
         list.Columns.Add(L("修改日期", "Modified"), 140);
         list.HeaderStyle = ColumnHeaderStyle.Clickable;
+        list.Resize += (_, _) => FitColumns();
         // 列头自己画：深色时跟着变深，点过的列标个 ▲▼（行还是系统画，勾选框照常）
         list.OwnerDraw = true;
         list.DrawItem += (_, e) => e.DrawDefault = true;
@@ -125,7 +126,7 @@ class BrowserForm : Form
         mid.Controls.Add(pwPanel);
         mid.Resize += (_, _) =>
         {
-            list.Columns[0].Width = Math.Max(200, mid.ClientSize.Width - 32 - 250);
+            FitColumns();
             pwPanel.Location = new Point(Math.Max(0, (mid.ClientSize.Width - pwPanel.Width) / 2), Math.Max(0, (mid.ClientSize.Height - pwPanel.Height) / 2));
         };
 
@@ -150,6 +151,13 @@ class BrowserForm : Form
         menu.Opening += (_, e) => { BuildMenu(); e.Cancel = menu.Items.Count == 0; };
         Shown += async (_, _) => { JobQueue.Shared.Browsing = true; await Reload(); };
         FormClosed += (_, _) => { JobQueue.Shared.Browsing = false; watchTimer.Stop(); SyncEdits(true); };
+    }
+
+    /// 名称列吃掉剩下的宽度：三列正好铺满，列头右边不留一块没画的空白
+    void FitColumns()
+    {
+        if (list.Columns.Count < 3) return;
+        list.Columns[0].Width = Math.Max(200, list.ClientSize.Width - list.Columns[1].Width - list.Columns[2].Width - 1);
     }
 
     void BuildPasswordPanel()
