@@ -109,13 +109,16 @@ final class Runner: @unchecked Sendable {
 
 enum SevenZip {
     static let bin: String = Bundle.main.path(forResource: "7zz", ofType: nil) ?? "/opt/homebrew/bin/7zz"
+    // RAR 的解码器有版权限制，Homebrew 版 7-Zip 没带（能认出 rar 但解不了，报 Unsupported Method），RAR 交给 unar（The Unarchiver 的命令行版，LGPL）
+    static let unar: String = Bundle.main.path(forResource: "unar", ofType: nil) ?? "/opt/homebrew/bin/unar"
 
     struct Result { var code: Int32; var out: String; var err: String; var all: String { out + "\n" + err } }
 
     /// 跑一次 7zz；onOut 收到标准输出的每一块（进度百分比在里面）
-    static func run(_ args: [String], runner: Runner? = nil, onOut: ((String) -> Void)? = nil) -> Result {
+    static func run(_ args: [String], exe: String = bin, runner: Runner? = nil,
+                    onOut: ((String) -> Void)? = nil, onErr: ((String) -> Void)? = nil) -> Result {
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: bin)
+        p.executableURL = URL(fileURLWithPath: exe)
         p.arguments = args
         // 从访达启动时没有 LANG，7-Zip 会按 C 区域处理文件名，中文全变问号——强制 UTF-8
         var env = ProcessInfo.processInfo.environment
@@ -136,6 +139,7 @@ enum SevenZip {
         errPipe.fileHandleForReading.readabilityHandler = { h in
             let d = h.availableData
             lock.lock(); err.append(d); lock.unlock()
+            if let onErr, !d.isEmpty, let s = String(data: d, encoding: .utf8) { onErr(s) }
         }
         if let runner, !runner.attach(p) { return Result(code: 255, out: "", err: "") }
         do { try p.run() } catch { return Result(code: -1, out: "", err: error.localizedDescription) }
@@ -155,7 +159,7 @@ enum SevenZip {
     static func classify(_ r: Result, runner: Runner? = nil) -> ZError {
         if runner?.cancelled == true { return .cancelled }
         let s = r.all
-        if s.contains("Wrong password") { return .wrongPassword }
+        if s.contains("Wrong password") || s.contains("Incorrect passphrase") || s.contains("Failed! (Wrong password)") || s.contains("This archive requires a password") || s.contains("Passphrase required") { return .wrongPassword }
         if s.contains("Missing volume") || s.contains("There are some data after the end") && s.contains("volume") { return .missingVolume }
         if s.contains("Unexpected end of archive") { return .failed(L("压缩包不完整（没下载完，或缺分卷）", "The archive is incomplete (unfinished download or missing volume)")) }
         if s.contains("Cannot open the file as archive") || s.contains("Can not open the file as archive") { return .notArchive }
@@ -174,6 +178,12 @@ enum SevenZip {
     /// 用最小的一个加密文件验证密码（不用把整个包解一遍）
     static func test(_ arc: URL, password: String, probe: Entry) -> Bool {
         let r = run(["t", "-spd", "-sccUTF-8", "-p" + password, arc.path, probe.path])
+        if r.all.contains("Unsupported Method") {   // RAR：7-Zip 没有解码器，改用 unar 把这一个文件解到临时目录试
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("unpack-probe-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let u = run(["-o", dir.path, "-f", "-D", "-nr", "-p", password, arc.path, probe.path], exe: unar)
+            return u.code == 0 && !u.all.lowercased().contains("password")
+        }
         return r.code == 0 && !r.all.contains("Wrong password")
     }
 
@@ -202,40 +212,36 @@ enum SevenZip {
 }
 
 // ---- 乱码修复 ----
-// Windows 上做的 zip 用 GBK 存中文名、Mac 访达做的 zip 用 UTF-8 但不打标记，7-Zip 在 Mac 上一律当 CP437 解，名字全成「╓╨╬─」这类框框。
-// 先从 zip 的中央目录读出原始字节判断真正的编码，再把 7-Zip 解出来的名字按 CP437 还原成字节、用真编码重新解读
+// Windows 上做的 zip 用 GBK（日文 Shift-JIS、繁体 Big5）存文件名、又不打 UTF-8 标记，7-Zip 在 Mac 上会把这种名字解成有损的乱码，没法事后还原。
+// 所以先从 zip 的中央目录读出原始字节判断真正的编码；是旧编码就改用系统自带的 bsdtar（libarchive）按这个编码解。
+// （Mac 访达做的 zip 是 UTF-8 不打标记，7-Zip 自己能认对，不用管）
 struct NameFixer {
-    static let cp437 = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.dosLatinUS.rawValue)))
     static let gbk = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))
     static let big5 = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.big5_HKSCS_1999.rawValue)))
-    let encoding: String.Encoding?
+    let encoding: String.Encoding?   // 需要按旧编码解时才有
+    let charset: String?             // 传给 bsdtar 的 iconv 编码名
+    let names: [String]              // 中央目录里按顺序的正确名字（和 7-Zip 列出的顺序一致）
 
-    init(_ arc: URL) { encoding = NameFixer.detect(NameFixer.rawNames(arc)) }
-
-    func fix(_ name: String) -> String {
-        guard let encoding else { return name }
-        return name.split(separator: "/", omittingEmptySubsequences: false).map { part -> String in
-            let s = String(part)
-            guard s.unicodeScalars.contains(where: { $0.value > 127 }),
-                  let raw = s.precomposedStringWithCanonicalMapping.data(using: NameFixer.cp437),
-                  let good = String(data: raw, encoding: encoding) else { return s }
-            return good
-        }.joined(separator: "/")
-    }
-
-    /// 把解出来的文件夹里所有名字修好（从最深处往外改，免得先改了父目录找不到子项）
-    func repair(_ root: URL) {
-        guard encoding != nil, let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return }
-        let urls = (e.allObjects as? [URL] ?? []).sorted { $0.pathComponents.count > $1.pathComponents.count }
-        for u in urls {
-            let fixed = fix(u.lastPathComponent)
-            guard fixed != u.lastPathComponent, !fixed.contains("/") else { continue }
-            try? FileManager.default.moveItem(at: u, to: u.deletingLastPathComponent().appendingPathComponent(fixed))
+    init(_ arc: URL) {
+        let raw = NameFixer.rawNames(arc)
+        let legacy = raw.filter { !$0.utf8Flag && $0.bytes.contains(where: { $0 > 127 }) }.map(\.bytes)
+        let e = NameFixer.detect(legacy)
+        guard let e, e != .utf8 else { encoding = nil; charset = nil; names = []; return }
+        encoding = e
+        charset = e == NameFixer.gbk ? "GB18030" : e == .shiftJIS ? "CP932" : "BIG5-HKSCS"
+        names = raw.map { r in
+            let n = String(data: r.bytes, encoding: r.utf8Flag ? .utf8 : e) ?? String(decoding: r.bytes, as: UTF8.self)
+            return n.hasSuffix("/") ? String(n.dropLast()) : n
         }
     }
 
-    /// 读 zip 中央目录里没打 UTF-8 标记、又含非 ASCII 字节的原始文件名
-    static func rawNames(_ arc: URL) -> [Data] {
+    /// 浏览内容时显示的名字
+    func display(_ e: Entry, total: Int) -> String {
+        names.count == total && names.indices.contains(e.id) ? names[e.id] : e.path
+    }
+
+    /// 按顺序读出 zip 中央目录里每一项的原始文件名字节，以及有没有打 UTF-8 标记
+    static func rawNames(_ arc: URL) -> [(bytes: Data, utf8Flag: Bool)] {
         guard let fh = try? FileHandle(forReadingFrom: arc) else { return [] }
         defer { try? fh.close() }
         guard let size = try? fh.seekToEnd(), size > 22 else { return [] }
@@ -259,12 +265,12 @@ struct NameFixer {
         guard cdSize < 64 << 20, cdOff + cdSize <= size else { return [] }
         try? fh.seek(toOffset: cdOff)
         let cd = [UInt8](fh.readData(ofLength: Int(cdSize)))
-        var names: [Data] = [], i = 0
+        var names: [(bytes: Data, utf8Flag: Bool)] = [], i = 0
         while i + 46 <= cd.count, cd[i] == 0x50, cd[i + 1] == 0x4b, cd[i + 2] == 1, cd[i + 3] == 2 {
             let flags = u16(cd, i + 8), n = u16(cd, i + 28), x = u16(cd, i + 30), c = u16(cd, i + 32)
             guard i + 46 + n <= cd.count else { break }
             let name = cd[(i + 46)..<(i + 46 + n)]
-            if flags & 0x800 == 0, name.contains(where: { $0 > 127 }) { names.append(Data(name)) }
+            names.append((Data(name), flags & 0x800 != 0))
             i += 46 + n + x + c
         }
         return names
@@ -403,8 +409,10 @@ enum Engine {
         }
     }
 
+    static var testDest: String?   // 自测时临时指定，不写进设置
+
     static func destDir(for src: URL) -> URL {
-        let d = UserDefaults.standard.string(forKey: Pref.dest) ?? ""
+        let d = testDest ?? UserDefaults.standard.string(forKey: Pref.dest) ?? ""
         if !d.isEmpty, FileManager.default.isWritableFile(atPath: d) { return URL(fileURLWithPath: d) }
         let beside = src.deletingLastPathComponent()
         // 压缩包在只读的地方（挂载的光盘、别人共享的盘），就放到「下载」
@@ -412,7 +420,7 @@ enum Engine {
             : FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
     }
 
-    struct Progress { var fraction: Double; var text: String }
+    struct Progress: Sendable { var fraction: Double; var text: String }
 
     static func extract(_ arc: URL, password: String?, listing: Listing, selection: [String]?, runner: Runner,
                         progress: @escaping (Progress) -> Void) -> Swift.Result<URL, ZError> {
@@ -429,20 +437,17 @@ enum Engine {
         do { try fm.createDirectory(at: tmp, withIntermediateDirectories: true) }
         catch { return .failure(.failed(L("没法在「\(parent.lastPathComponent)」里写文件", "Can't write to “\(parent.lastPathComponent)”"))) }
 
-        var args = ["x", "-y", "-bsp1", "-bso0", "-bse2", "-sccUTF-8", "-p" + (password ?? ""), "-o" + tmp.path, arc.path]
-        var listFile: URL?
-        if let selection {
-            let lf = fm.temporaryDirectory.appendingPathComponent("unpack-\(UUID().uuidString).txt")
-            try? selection.joined(separator: "\n").write(to: lf, atomically: true, encoding: .utf8)
-            args += ["-spd", "-scsUTF-8", "@" + lf.path]
-            listFile = lf
+        let fixer = NameFixer(arc)
+        let r: SevenZip.Result
+        if listing.type.lowercased().hasPrefix("rar") {
+            r = unarExtract(arc, into: tmp, password: password, need: need, selection: selection, runner: runner, progress: progress)
+        } else if fixer.charset != nil, listing.type == "zip", fixer.names.count == listing.entries.count {
+            r = bsdtar(arc, into: tmp, fixer: fixer, password: password, listing: listing, selection: selection, runner: runner, progress: progress)
+        } else {
+            r = sevenZipExtract(arc, into: tmp, password: password, need: need, selection: selection, runner: runner, progress: progress)
         }
-        defer { if let listFile { try? fm.removeItem(at: listFile) } }
-
-        let r = run7z(args, total: need, label: L("解压", "Extracting"), runner: runner, progress: progress)
         if r.code != 0 { return .failure(SevenZip.classify(r, runner: runner)) }
 
-        NameFixer(arc).repair(tmp)
         if Pref.on(Pref.cleanJunk) { removeJunk(tmp) }
         var root = tmp
         // .tar.gz / .tgz：第一层只解出一个 .tar，接着把 tar 也解开
@@ -479,6 +484,68 @@ enum Engine {
         }
     }
 
+    static func sevenZipExtract(_ arc: URL, into tmp: URL, password: String?, need: Int64, selection: [String]?, runner: Runner,
+                                progress: @escaping (Progress) -> Void) -> SevenZip.Result {
+        var args = ["x", "-y", "-bsp1", "-bso0", "-bse2", "-sccUTF-8", "-p" + (password ?? ""), "-o" + tmp.path, arc.path]
+        var listFile: URL?
+        if let selection {
+            let lf = FileManager.default.temporaryDirectory.appendingPathComponent("unpack-\(UUID().uuidString).txt")
+            try? selection.joined(separator: "\n").write(to: lf, atomically: true, encoding: .utf8)
+            args += ["-spd", "-scsUTF-8", "@" + lf.path]
+            listFile = lf
+        }
+        defer { if let listFile { try? FileManager.default.removeItem(at: listFile) } }
+        return run7z(args, total: need, label: L("解压", "Extracting"), runner: runner, progress: progress)
+    }
+
+    /// RAR 交给 unar；它不报百分比，就每 0.3 秒量一下临时文件夹已经写了多大来算进度
+    static func unarExtract(_ arc: URL, into tmp: URL, password: String?, need: Int64, selection: [String]?, runner: Runner,
+                            progress: @escaping (Progress) -> Void) -> SevenZip.Result {
+        var args = ["-o", tmp.path, "-f", "-D", "-nr", "-q"]   // -nr：不自动解包里的包，tar 由我们自己处理
+        if let password, !password.isEmpty { args += ["-p", password] }
+        args.append(arc.path)
+        args += selection ?? []
+        let start = Date()
+        let timer = DispatchSource.makeTimerSource(queue: .global())
+        timer.schedule(deadline: .now() + 0.3, repeating: 0.3)
+        timer.setEventHandler {
+            let done = sizeOf(tmp), t = Date().timeIntervalSince(start)
+            guard need > 0, done > 0 else { return }
+            let f = min(0.99, Double(done) / Double(need))
+            var text = L("解压", "Extracting") + " \(Int(f * 100))%"
+            if t > 0.8 {
+                let speed = Double(done) / t
+                text += " · \(bytes(Int64(speed)))/s · " + L("还剩 ", "") + duration(Double(need - done) / max(speed, 1)) + L("", " left")
+            }
+            progress(Progress(fraction: f, text: text))
+        }
+        timer.resume()
+        defer { timer.cancel() }
+        return SevenZip.run(args, exe: SevenZip.unar, runner: runner)
+    }
+
+    /// 旧编码文件名的 zip 交给系统的 bsdtar，按检测到的编码解名字；它没有百分比，按解出的条数算进度
+    static func bsdtar(_ arc: URL, into tmp: URL, fixer: NameFixer, password: String?, listing: Listing, selection: [String]?,
+                       runner: Runner, progress: @escaping (Progress) -> Void) -> SevenZip.Result {
+        var args = ["-xvf", arc.path, "-C", tmp.path, "--options", "hdrcharset=" + fixer.charset!]
+        if let password, !password.isEmpty { args += ["--passphrase", password] }
+        var total = listing.entries.count
+        if let selection {
+            let pick = listing.entries.filter { selection.contains($0.path) }
+            args += pick.map { fixer.names[$0.id] }
+            total = pick.count
+        }
+        let lock = NSLock()
+        var done = 0
+        return SevenZip.run(args, exe: "/usr/bin/bsdtar", runner: runner, onErr: { chunk in
+            lock.lock()
+            done += chunk.split(separator: "\n").filter { $0.hasPrefix("x ") }.count
+            let f = min(1, Double(done) / Double(max(total, 1)))
+            lock.unlock()
+            progress(Progress(fraction: f, text: L("解压", "Extracting") + " \(Int(f * 100))% · " + L("按 \(fixer.charset!) 编码修正文件名", "decoding names as \(fixer.charset!)")))
+        })
+    }
+
     static func compress(_ srcs: [URL], runner: Runner, progress: @escaping (Progress) -> Void) -> Swift.Result<URL, ZError> {
         let parent = destDir(for: srcs[0])
         let name = srcs.count == 1 ? srcs[0].lastPathComponent : L("归档", "Archive")
@@ -498,7 +565,7 @@ enum Engine {
     static func run7z(_ args: [String], total: Int64, label: String, runner: Runner, progress: @escaping (Progress) -> Void) -> SevenZip.Result {
         let start = Date()
         var last = -1
-        return SevenZip.run(args, runner: runner) { chunk in
+        return SevenZip.run(args, runner: runner, onOut: { chunk in
             let nums = pctRegex.matches(in: chunk, range: NSRange(chunk.startIndex..., in: chunk)).compactMap { Int((chunk as NSString).substring(with: $0.range(at: 1))) }
             guard let pct = nums.last, pct != last else { return }
             last = pct
@@ -510,7 +577,7 @@ enum Engine {
                 text += " · \(bytes(Int64(speed)))/s · " + L("还剩 ", "") + duration(left) + L("", " left")
             }
             progress(Progress(fraction: Double(pct) / 100, text: text))
-        }
+        })
     }
 
     static func duration(_ s: Double) -> String {
@@ -752,8 +819,8 @@ func pickFiles() {
 /// 自测：不开窗口，直接解，把结果打到标准输出
 func selfTest(_ list: String) {
     let env = ProcessInfo.processInfo.environment
-    if let d = env["UNPACK_DEST"] { UserDefaults.standard.set(d, forKey: Pref.dest) }
-    UserDefaults.standard.set(false, forKey: Pref.reveal)
+    Engine.testDest = env["UNPACK_DEST"]
+    if let p = env["UNPACK_SAVE"] { Passwords.remember(p) }   // 先往密码本里存一个，测自动试密码
     for path in list.split(separator: ":") {
         let u = URL(fileURLWithPath: String(path))
         if !Archive.isArchive(u) {
@@ -766,8 +833,8 @@ func selfTest(_ list: String) {
         switch Engine.unlock(arc, given: env["UNPACK_PW"]) {
         case .failure(let e): print("FAIL \(u.lastPathComponent): \(e.text)")
         case .success(let (l, pw)):
-            print("LIST \(arc.lastPathComponent) type=\(l.type) n=\(l.entries.count) pw=\(pw ?? "-") enc=\(fixer.encoding.map { "\($0)" } ?? "-")")
-            for e in l.entries.prefix(5) { print("   ", fixer.fix(e.path)) }
+            print("LIST \(arc.lastPathComponent) type=\(l.type) n=\(l.entries.count) pw=\(pw ?? "-") enc=\(fixer.charset ?? "-")")
+            for e in l.entries.prefix(5) { print("   ", fixer.display(e, total: l.entries.count)) }
             let r = Engine.extract(arc, password: pw, listing: l, selection: nil, runner: Runner()) { _ in }
             switch r {
             case .success(let out): print("OK → \(out.path)")
@@ -810,6 +877,9 @@ struct ContentView: View {
             queue.add(urls); return !urls.isEmpty
         } isTargeted: { t in withAnimation(.spring(duration: 0.3)) { targeted = t } }
         .sheet(item: $browsing) { BrowserView(job: $0) }
+        .onChange(of: queue.jobs.count) { _, n in   // 自测截图用：UNPACK_BROWSE=1 时自动打开第一个包的内容
+            if n > 0, browsing == nil, ProcessInfo.processInfo.environment["UNPACK_BROWSE"] != nil { browsing = queue.jobs.first }
+        }
     }
 }
 
@@ -831,7 +901,7 @@ struct DropHero: View {
                     .offset(y: float ? -4 : 4)
                     .animation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true), value: float)
                 Text(L("把压缩包拖到这里", "Drop archives here")).font(.title2.weight(.semibold))
-                Text("zip · 7z · rar · tar · gz · xz · zst · iso · cab · 分卷 …")
+                Text("zip · 7z · rar · tar · gz · xz · zst · iso · cab · " + L("分卷", "split volumes") + " …")
                     .font(.callout).foregroundStyle(.secondary)
                 HStack(spacing: 14) {
                     Feature(icon: "key.fill", text: L("密码本自动试", "Auto-try saved passwords"))
@@ -854,7 +924,7 @@ struct DropHero: View {
 struct Feature: View {
     let icon: String, text: String
     var body: some View {
-        Label(text, systemImage: icon).font(.caption).foregroundStyle(.secondary)
+        Label(text, systemImage: icon).font(.caption).foregroundStyle(.secondary).fixedSize()
             .padding(.horizontal, 9).padding(.vertical, 5)
             .background(.quaternary.opacity(0.6), in: Capsule())
     }
@@ -1057,7 +1127,7 @@ struct BrowserView: View {
     var rows: [Row] {
         guard let listing else { return [] }
         let f = fixer
-        return listing.entries.map { Row(id: $0.id, name: f.fix($0.path), size: $0.size, isDir: $0.isDir, entry: $0) }
+        return listing.entries.map { Row(id: $0.id, name: f.display($0, total: listing.entries.count), size: $0.size, isDir: $0.isDir, entry: $0) }
             .filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
     }
 
@@ -1151,12 +1221,11 @@ struct BrowserView: View {
     /// 把这一项单独解到临时目录，用系统的快速预览打开
     func quickLook(_ id: Int) {
         guard let e = listing?.entries.first(where: { $0.id == id }), !e.isDir else { return }
-        let arc = job.sources[0], pw = password ?? "", f = fixer
+        let arc = job.sources[0], pw = password ?? "", good = (fixer.display(e, total: listing?.entries.count ?? 0) as NSString).lastPathComponent
         Task.detached {
             let dir = FileManager.default.temporaryDirectory.appendingPathComponent("unpack-preview-\(id)-\(UUID().uuidString.prefix(6))")
             _ = SevenZip.run(["e", "-y", "-spd", "-sccUTF-8", "-p" + pw, "-o" + dir.path, arc.path, e.path])
             guard var u = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?.first else { return }
-            let good = (f.fix(e.path) as NSString).lastPathComponent
             if good != u.lastPathComponent {
                 let g = dir.appendingPathComponent(good)
                 if (try? FileManager.default.moveItem(at: u, to: g)) != nil { u = g }

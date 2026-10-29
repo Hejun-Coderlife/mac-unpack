@@ -8,8 +8,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swiftc -O -parse-as-library -swift-version 5 -target arm64-apple-macos15.0 \
   -framework QuickLook -framework Security \
   Unpack.swift -o "$APP/Contents/MacOS/Unpack"
-# 引擎：7-Zip 命令行版（vendor/7zz，取自 Homebrew 的 sevenzip，LGPL + unRAR 许可）
-cp vendor/7zz "$APP/Contents/Resources/7zz"
+# 引擎：7-Zip 命令行版（vendor/7zz，取自 Homebrew 的 sevenzip，LGPL）；RAR 用 unar（vendor/unar，取自 Homebrew，LGPL，只依赖系统库）
+cp vendor/7zz vendor/unar "$APP/Contents/Resources/"
 # 图标：tools/icon.swift 画 1024 原稿 → 各尺寸 → icns（已有 AppIcon.icns 就不重画）
 if [ ! -f AppIcon.icns ]; then
   ICON=build/AppIcon.iconset; mkdir -p "$ICON"
@@ -82,7 +82,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 # 用钥匙串里固定的本机证书签名：重编译后系统仍认得是同一个程序，钥匙串里的密码本不会每次都弹窗问；没有证书时退回临时签名
 if security find-identity -v -p codesigning | grep -q "Hejun Local Code Signing"; then SIGN="Hejun Local Code Signing"; else SIGN=-; fi
-codesign --force -s "$SIGN" "$APP/Contents/Resources/7zz"
+codesign --force -s "$SIGN" "$APP/Contents/Resources/7zz" "$APP/Contents/Resources/unar"
 codesign --force -s "$SIGN" "$APP"
 rm -rf "/Applications/解压.app"
 cp -R "$APP" /Applications/
