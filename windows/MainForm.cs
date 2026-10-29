@@ -139,7 +139,7 @@ class MainForm : Form
     readonly Panel statusBar = new() { Dock = DockStyle.Bottom, Height = 30, BackColor = Theme.Bar };
     readonly DropOverlay overlay = new();
     readonly Dictionary<Guid, JobRow> rows = new();
-    LinkLabel destLink, clearLink;
+    LinkLabel destLink, clearLink, updateLink;
     int W = 600;
 
     public MainForm()
@@ -176,6 +176,8 @@ class MainForm : Form
         JobQueue.Shared.AllDone += () => { var t = new System.Windows.Forms.Timer { Interval = 1200 }; t.Tick += (_, _) => Close(); t.Start(); };
         KeyDown += (_, e) => { if (e.Control && e.KeyCode == Keys.O) { PickFiles(); e.Handled = true; } };
         FormClosing += (_, _) => JobQueue.Shared.CancelAll();
+        Updater.Changed += UpdateChrome;
+        Shown += (_, _) => Updater.Check();
         Rebuild();
     }
 
@@ -298,6 +300,15 @@ class MainForm : Form
         int busy = JobQueue.Shared.Busy;
         Text = busy > 0 ? $"{AppName} ({busy})" : AppName;
         clearLink.Visible = JobQueue.Shared.Jobs.Any(j => j.State == JobState.Done);
+        updateLink.Visible = Updater.Now != Updater.State.Idle;
+        updateLink.Enabled = Updater.Now != Updater.State.Working;
+        updateLink.Text = Updater.Now switch
+        {
+            Updater.State.Working => L("正在更新…", "Updating…"),
+            Updater.State.Failed => L("更新失败，去下载", "Update failed — download"),
+            _ => L($"有新版本 {Prefs.Current.LatestVersion} · 更新", $"Update to {Prefs.Current.LatestVersion}"),
+        };
+        updateLink.LinkColor = updateLink.ActiveLinkColor = Updater.Now == Updater.State.Failed ? Theme.Error : Theme.LinkColor;
         var d = Prefs.Current.Dest;
         destLink.Text = L("解压到：", "Extract to: ") + (string.IsNullOrEmpty(d) ? L("压缩包旁边", "next to the archive") : Path.GetFileName(d.TrimEnd('\\'))) + "  ⌄";
     }
@@ -329,6 +340,9 @@ class MainForm : Form
         right.Controls.Add(Theme.Link(L("设置", "Settings"), () => { using var s = new SettingsForm(); s.ShowDialog(this); UpdateChrome(); }, Theme.Secondary, 9));
         clearLink = Theme.Link(L("清除已完成", "Clear finished"), () => JobQueue.Shared.ClearFinished(), Theme.Secondary, 9, new Padding(0, 0, 14, 0));
         right.Controls.Add(clearLink);
+        updateLink = Theme.Link("", () => { if (Updater.Now == Updater.State.Failed) Updater.OpenPage(); else Updater.Install(); }, null, 9, new Padding(0, 0, 14, 0));
+        updateLink.Visible = false;
+        right.Controls.Add(updateLink);
         statusBar.Controls.Add(right);
     }
 
@@ -523,6 +537,7 @@ class SettingsForm : Form
         Box(L("解完在资源管理器里选中", "Show in Explorer when done"), p.Reveal, v => p.Reveal = v);
         Box(L("解完把压缩包移到回收站（分卷一起）", "Move archive (all parts) to Recycle Bin when done"), p.TrashAfter, v => p.TrashAfter = v);
         Box(L("双击压缩包打开时，解完自动退出", "Quit after extracting files opened from Explorer"), p.QuitAfter, v => p.QuitAfter = v);
+        Box(L("有新版本时提醒我（每天看一次）", "Tell me when a new version is out"), p.AutoUpdate, v => p.AutoUpdate = v);
         Box(L("资源管理器右键菜单加「用解压处理」", "Add “Open with Unpack” to the Explorer context menu"), ContextMenu.Installed, ContextMenu.Set);
         col.Controls.Add(Theme.RuleLine(new Padding(0, 8, 0, 8)));
         Box(L("输对的密码记进密码本（用 Windows 账户加密保存）", "Save correct passwords (encrypted with your Windows account)"), p.RememberPw, v => p.RememberPw = v);

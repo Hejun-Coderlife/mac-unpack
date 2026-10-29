@@ -2,6 +2,7 @@
 # 编译成 解压.app（只要命令行开发工具，不用 Xcode），装到 /Applications
 set -e
 cd "$(dirname "$0")"
+VER=$(cat VERSION)   # 版本号只写在 VERSION 里（Windows 版也读它）
 APP="build/解压.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -27,7 +28,7 @@ printf '"CFBundleName" = "解压";\n"CFBundleDisplayName" = "解压";\n' > "$APP
 printf '"CFBundleName" = "Unpack";\n"CFBundleDisplayName" = "Unpack";\n' > "$APP/Contents/Resources/en.lproj/InfoPlist.strings"
 printf '"用「解压」处理" = "用「解压」处理";\n' > "$APP/Contents/Resources/zh-Hans.lproj/ServicesMenu.strings"
 printf '"用「解压」处理" = "Unpack or Zip";\n' > "$APP/Contents/Resources/en.lproj/ServicesMenu.strings"
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -40,7 +41,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleExecutable</key><string>Unpack</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleShortVersionString</key><string>$VER</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>NSHighResolutionCapable</key><true/>

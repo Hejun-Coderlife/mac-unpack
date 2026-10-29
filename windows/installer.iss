@@ -9,8 +9,11 @@
 [Setup]
 AppId={{304E1695-683E-415A-98A6-C6036629DBEC}
 AppName=解压
-AppVerName=解压 1.0
-AppVersion=1.0.0
+#ifndef AppVer
+  #define AppVer "0"
+#endif
+AppVerName=解压 {#AppVer}
+AppVersion={#AppVer}
 AppPublisher=Hejun
 DefaultDirName={autopf}\Unpack
 DefaultGroupName=解压
@@ -18,6 +21,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ChangesAssociations=yes
+CloseApplications=force
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..
@@ -77,15 +81,61 @@ Root: HKA; Subkey: "Software\Classes\Applications\解压.exe\shell\open\command"
 Root: HKA; Subkey: "Software\Unpack\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "解压"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Unpack\Capabilities"; ValueType: string; ValueName: "ApplicationDescription"; ValueData: "zip · 7z · rar · 分卷 · 加密包 · 乱码修复"
 Root: HKA; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "Unpack"; ValueData: "Software\Unpack\Capabilities"; Flags: uninsdeletevalue
-#define Exts "zip 7z rar tar gz tgz bz2 tbz2 xz txz zst tzst 001 z01 r00 lzh lha arj"
-#sub AddExt
-  #define E Copy(Exts, 1, Pos(" ", Exts + " ") - 1)
-Root: HKA; Subkey: "Software\Classes\.{#E}\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
-Root: HKA; Subkey: "Software\Classes\.{#E}"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
-Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".{#E}"; ValueData: "Unpack.Archive"
-  #define Exts Copy(Exts, Pos(" ", Exts + " ") + 1, Len(Exts))
-#endsub
-#for {0; Len(Exts) > 0; 0} AddExt
+; 这些格式：加进「打开方式」+（勾了 assoc）设成默认 + 登记到「默认应用」里
+Root: HKA; Subkey: "Software\Classes\.zip\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.zip"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".zip"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.7z\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.7z"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".7z"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.rar\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.rar"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".rar"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.tar\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.tar"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".tar"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.gz\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.gz"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".gz"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.tgz\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.tgz"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".tgz"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.bz2\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.bz2"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".bz2"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.tbz2\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.tbz2"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".tbz2"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.xz\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.xz"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".xz"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.txz\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.txz"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".txz"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.zst\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.zst"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".zst"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.tzst\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.tzst"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".tzst"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.001\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.001"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".001"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.z01\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.z01"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".z01"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.r00\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.r00"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".r00"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.lzh\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.lzh"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".lzh"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.lha\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.lha"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".lha"; ValueData: "Unpack.Archive"
+Root: HKA; Subkey: "Software\Classes\.arj\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.arj"; ValueType: string; ValueName: ""; ValueData: "Unpack.Archive"; Flags: uninsdeletevalue; Tasks: assoc
+Root: HKA; Subkey: "Software\Unpack\Capabilities\FileAssociations"; ValueType: string; ValueName: ".arj"; ValueData: "Unpack.Archive"
 ; iso、cab、wim 系统自己会打开（挂载/查看），只加进「打开方式」，不抢默认
 Root: HKA; Subkey: "Software\Classes\.iso\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKA; Subkey: "Software\Classes\.cab\OpenWithProgids"; ValueType: string; ValueName: "Unpack.Archive"; ValueData: ""; Flags: uninsdeletevalue
@@ -102,3 +152,11 @@ Root: HKA; Subkey: "Software\Classes\Directory\shell\Unpack\command"; ValueType:
 
 [Run]
 Filename: "{app}\解压.exe"; Description: "{cm:Launch}"; Flags: nowait postinstall skipifsilent
+; 软件里点「更新」时是静默安装，带 /RELAUNCH=1：装完把软件重新打开（用原来的用户身份，不带管理员权限）
+Filename: "{app}\解压.exe"; Flags: nowait runasoriginaluser; Check: Relaunch
+
+[Code]
+function Relaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;

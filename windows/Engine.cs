@@ -42,6 +42,10 @@ class Prefs
     public bool NestedTar { get; set; } = true;     // .tar.gz 这类一次解到底
     public bool QuitAfter { get; set; } = true;     // 双击压缩包打开时，全部解完自动退出
     public bool RememberPw { get; set; } = true;    // 输对的密码记进密码本
+    public bool AutoUpdate { get; set; } = true;    // 每天看一次 GitHub 上有没有新版本
+    public DateTime LastUpdateCheck { get; set; }
+    public string LatestVersion { get; set; } = "";
+    public string LatestAsset { get; set; } = "";
 
     public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Unpack");
     static readonly string FilePath = Path.Combine(Dir, "settings.json");

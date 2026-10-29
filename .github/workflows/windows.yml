@@ -3,8 +3,13 @@ name: windows
 
 on:
   push:
-    paths: ["windows/**", ".github/workflows/windows.yml"]
+    paths: ["windows/**", "VERSION", ".github/workflows/windows.yml"]
+  release:
+    types: [published]   # 在 GitHub 上发新版时：编好后把 Windows 的两个包传到这个版本下面（软件里的自动更新从这里下载）
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -26,7 +31,7 @@ jobs:
 
       - name: Publish
         shell: pwsh
-        run: dotnet publish windows/Unpack.csproj -c Release -r win-x64 -o publish
+        run: dotnet publish windows/Unpack.csproj -c Release -r win-x64 -o publish "-p:Version=$((Get-Content VERSION).Trim())"
 
       - name: Assemble
         shell: pwsh
@@ -94,7 +99,7 @@ jobs:
             try { Invoke-WebRequest https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl -OutFile windows\ChineseSimplified.isl }
             catch { Invoke-WebRequest https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/Unofficial/ChineseSimplified.isl -OutFile windows\ChineseSimplified.isl }
           }
-          & $iscc /Q "/DSrc=$((Resolve-Path dist\Unpack).Path)" windows\installer.iss
+          & $iscc /Q "/DSrc=$((Resolve-Path dist\Unpack).Path)" "/DAppVer=$((Get-Content VERSION).Trim())" windows\installer.iss
           if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
           Get-Item Unpack-Setup-x64.exe | Format-Table Name, Length
 
@@ -143,7 +148,15 @@ jobs:
           Get-ChildItem $d | Format-Table Name
           if ((Get-ChildItem $d).Count -le $before) { throw "double-click did not extract" }
           Stop-Process -Name Unpack -Force -ErrorAction SilentlyContinue
-          # 卸载：注册的东西都要清掉
+          # 覆盖升级（软件里点「更新」走的就是这条）：静默装同一个包 + /RELAUNCH=1，装完软件要自己重新打开
+          $p = Start-Process .\Unpack-Setup-x64.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/RELAUNCH=1" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "upgrade exit $($p.ExitCode)" }
+          Start-Sleep 5
+          if (!(Get-Process Unpack -ErrorAction SilentlyContinue)) { throw "not relaunched after upgrade" }
+          if ((Get-ItemProperty "HKCU:\Software\Classes\.rar").'(default)' -ne "Unpack.Archive") { throw "association lost after upgrade" }
+          Shot "6-after-upgrade"
+          Stop-Process -Name Unpack -Force -ErrorAction SilentlyContinue
+                    # 卸载：注册的东西都要清掉
           $u = Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -PassThru -Wait
           Start-Sleep 3
           if (Test-Path "HKCU:\Software\Classes\Unpack.Archive") { throw "ProgID left after uninstall" }
@@ -151,6 +164,13 @@ jobs:
           if (Test-Path 'HKCU:\Software\Classes\*\shell\Unpack') { throw "context menu left" }
           if (Test-Path "$app\解压.exe") { throw "files left" }
           "installer OK"
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" Unpack-Windows-x64.zip Unpack-Setup-x64.exe --clobber
 
       - uses: actions/upload-artifact@v4
         if: always()

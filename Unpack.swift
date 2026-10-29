@@ -24,9 +24,11 @@ enum Pref {
     static let nestedTar = "nestedTar"   // .tar.gz 这类一次解到底
     static let quitAfter = "quitAfter"   // 双击压缩包打开时，全部解完自动退出
     static let rememberPw = "rememberPw" // 输对的密码记进密码本
+    static let autoUpdate = "autoUpdate" // 每天看一次 GitHub 上有没有新版本
+    static let lastCheck = "lastUpdateCheck", latestVersion = "latestVersion", latestAsset = "latestAsset"
     static func register() {
         UserDefaults.standard.register(defaults: [dest: "", trashAfter: false, cleanJunk: true, reveal: true,
-                                                  nestedTar: true, quitAfter: true, rememberPw: true])
+                                                  nestedTar: true, quitAfter: true, rememberPw: true, autoUpdate: true])
     }
     static func on(_ k: String) -> Bool { UserDefaults.standard.bool(forKey: k) }
 }
@@ -765,6 +767,105 @@ final class JobQueue: ObservableObject {
     func cancelAll() { jobs.forEach { $0.cancel() } }
 }
 
+// ---- 自动更新：每天最多问一次 GitHub 最新发布版；有新版就在状态栏提示，点一下下载、换掉自己、重新打开 ----
+final class Updater: ObservableObject {
+    static let shared = Updater()
+    enum State: Equatable { case idle, available(String), working, failed }
+    @Published var state = State.idle
+    static let api = URL(string: "https://api.github.com/repos/Hejun-Coderlife/mac-unpack/releases/latest")!
+    static let page = URL(string: "https://github.com/Hejun-Coderlife/mac-unpack/releases/latest")!
+    static let assetName = "Unpack-macOS.zip"
+    let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+    private let d = UserDefaults.standard
+
+    /// "1.10" 比 "1.9" 新：按点分开逐段比数字
+    static func newer(_ a: String, than b: String) -> Bool {
+        let x = a.split(separator: ".").map { Int($0) ?? 0 }, y = b.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(x.count, y.count) {
+            let p = i < x.count ? x[i] : 0, q = i < y.count ? y[i] : 0
+            if p != q { return p > q }
+        }
+        return false
+    }
+
+    func check() {
+        guard Pref.on(Pref.autoUpdate) else { return }
+        showPending()
+        guard Date().timeIntervalSince1970 - d.double(forKey: Pref.lastCheck) > 86400 else { return }
+        var req = URLRequest(url: Self.api, timeoutInterval: 20)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: req) { data, resp, _ in
+            guard (resp as? HTTPURLResponse)?.statusCode == 200, let data,
+                  let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let tag = j["tag_name"] as? String else { return }
+            let assets = j["assets"] as? [[String: Any]] ?? []
+            guard let url = assets.first(where: { $0["name"] as? String == Self.assetName })?["browser_download_url"] as? String else { return }
+            ui {
+                self.d.set(Date().timeIntervalSince1970, forKey: Pref.lastCheck)
+                self.d.set(tag.trimmingCharacters(in: CharacterSet(charactersIn: "vV")), forKey: Pref.latestVersion)
+                self.d.set(url, forKey: Pref.latestAsset)
+                self.showPending()
+            }
+        }.resume()
+    }
+
+    /// 上次查到的新版还没装：直接提示，不用再联网
+    private func showPending() {
+        guard state == .idle, let v = d.string(forKey: Pref.latestVersion), Self.newer(v, than: current) else { return }
+        state = .available(v)
+    }
+
+    func install() {
+        guard let s = d.string(forKey: Pref.latestAsset), let url = URL(string: s) else { return }
+        let target = Bundle.main.bundleURL
+        // 装在没权限写的地方（或者从「下载」里直接打开、被系统挪到临时位置）：换不了自己，就打开下载页
+        guard FileManager.default.isWritableFile(atPath: target.deletingLastPathComponent().path),
+              !target.path.contains("/AppTranslocation/") else { NSWorkspace.shared.open(Self.page); return }
+        state = .working
+        URLSession.shared.downloadTask(with: url) { tmp, resp, _ in
+            guard let tmp, (resp as? HTTPURLResponse)?.statusCode == 200 else { ui { self.state = .failed }; return }
+            let fm = FileManager.default
+            let dir = fm.temporaryDirectory.appendingPathComponent("unpack-update-" + UUID().uuidString)
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let unzip = Process()
+            unzip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+            unzip.arguments = ["-x", "-k", tmp.path, dir.path]
+            try? unzip.run(); unzip.waitUntilExit()
+            guard unzip.terminationStatus == 0,
+                  let app = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?.first(where: { $0.pathExtension == "app" }),
+                  Bundle(url: app)?.bundleIdentifier == Bundle.main.bundleIdentifier else { ui { self.state = .failed }; return }
+            // 等本程序退出 → 旧的挪开、新的换上（失败就把旧的放回去）→ 重新打开
+            let q = { (u: URL) in "'" + u.path.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+            let old = target.deletingLastPathComponent().appendingPathComponent(".unpack-old-\(UUID().uuidString).app")
+            let script = """
+            while kill -0 \(getpid()) 2>/dev/null; do sleep 0.2; done
+            if mv \(q(target)) \(q(old)); then
+              if mv \(q(app)) \(q(target)); then rm -rf \(q(old)); else mv \(q(old)) \(q(target)); fi
+            fi
+            rm -rf \(q(dir))
+            open \(q(target))
+            """
+            let sh = Process()
+            sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+            sh.arguments = ["-c", script]
+            do { try sh.run() } catch { ui { self.state = .failed }; return }
+            ui { NSApp.terminate(nil) }
+        }.resume()
+    }
+}
+
+/// 状态栏里的「有新版本」提示
+struct UpdateLink: View {
+    @ObservedObject var u = Updater.shared
+    var body: some View {
+        switch u.state {
+        case .available(let v): LinkButton(title: L("有新版本 \(v) · 更新", "Update to \(v)")) { u.install() }
+        case .working: Text(L("正在更新…", "Updating…")).foregroundStyle(Theme.faint)
+        case .failed: LinkButton(title: L("更新失败，去下载", "Update failed — download"), color: Theme.error) { NSWorkspace.shared.open(Updater.page) }
+        case .idle: EmptyView()
+        }
+    }
+}
+
 // ---- App ----
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -774,6 +875,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
+        Updater.shared.check()
+        if ProcessInfo.processInfo.environment["UNPACK_UPDATE_NOW"] != nil, case .available = Updater.shared.state { Updater.shared.install() }   // 自测用
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationWillTerminate(_ notification: Notification) {
@@ -1129,6 +1232,7 @@ struct StatusBar: View {
                 }
                 .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
                 Spacer()
+                UpdateLink()
                 if queue.jobs.contains(where: { $0.state == .done }) {
                     LinkButton(title: L("清除已完成", "Clear finished"), color: Theme.secondary) { withAnimation { queue.clearFinished() } }
                 }
@@ -1150,6 +1254,7 @@ struct SettingsView: View {
     @AppStorage(Pref.trashAfter) private var trashAfter = false
     @AppStorage(Pref.quitAfter) private var quitAfter = true
     @AppStorage(Pref.rememberPw) private var rememberPw = true
+    @AppStorage(Pref.autoUpdate) private var autoUpdate = true
     @State private var saved = Passwords.all().count
 
     var body: some View {
@@ -1161,6 +1266,7 @@ struct SettingsView: View {
             Toggle(L("解完在访达里选中", "Show in Finder when done"), isOn: $reveal)
             Toggle(L("解完把压缩包移到废纸篓（分卷一起）", "Move archive (all parts) to Trash when done"), isOn: $trashAfter)
             Toggle(L("双击压缩包打开时，解完自动退出", "Quit after extracting files opened from Finder"), isOn: $quitAfter)
+            Toggle(L("有新版本时提醒我（每天看一次）", "Tell me when a new version is out"), isOn: $autoUpdate)
             Rule()
             Toggle(L("输对的密码记进密码本（存在钥匙串）", "Save correct passwords to Keychain"), isOn: $rememberPw)
             HStack {
