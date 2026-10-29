@@ -13,7 +13,7 @@ static class Theme
     public static readonly Color Faint = Hex(0xAAAAAA);
     public static readonly Color Rule = Hex(0xEEEEEE);
     public static readonly Color QuoteBar = Hex(0xDFE2E5);
-    public static readonly Color Link = Hex(0x4183C4);
+    public static readonly Color LinkColor = Hex(0x4183C4);
     public static readonly Color Error = Hex(0xC7254E);
     public static readonly Color Ok = Hex(0x4E9A5B);
     public static readonly Color Bar = Hex(0xF8F8F8);
@@ -36,7 +36,7 @@ static class Theme
     /// 蓝色文字链接（悬停加下划线、手形）
     public static LinkLabel Link(string text, Action click, Color? color = null, float size = 10, Padding? margin = null)
     {
-        var c = color ?? Theme.Link;
+        var c = color ?? Theme.LinkColor;
         var l = new LinkLabel
         {
             Text = text, Font = F(size), AutoSize = true, Margin = margin ?? Padding.Empty, BackColor = Color.Transparent,
@@ -74,7 +74,7 @@ class ThinProgress : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         e.Graphics.Clear(Theme.Rule);
-        using var b = new SolidBrush(Theme.Link);
+        using var b = new SolidBrush(Theme.LinkColor);
         e.Graphics.FillRectangle(b, 0, 0, Math.Max(2, (int)(Width * value)), Height);
     }
 }
@@ -112,7 +112,7 @@ class DropOverlay : Control
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
         g.Clear(Color.FromArgb(250, 250, 250));
-        using (var pen = new Pen(Color.FromArgb(128, Theme.Link), 2))
+        using (var pen = new Pen(Color.FromArgb(128, Theme.LinkColor), 2))
         using (var path = Rounded(new RectangleF(14, 14, Width - 28, Height - 28), 10)) g.DrawPath(pen, path);
         var t1 = L("松手即可", "Release to unpack");
         var t2 = L("压缩包会被解开，文件夹会被压成 zip", "Archives are extracted, folders are zipped");

@@ -113,7 +113,7 @@ class BrowserForm : Form
         {
             if (q.Length > 0 && e.Path.IndexOf(q, StringComparison.OrdinalIgnoreCase) < 0) continue;
             var it = new ListViewItem((e.IsDir ? "📁 " : e.Encrypted ? "🔒 " : "") + e.Path) { Tag = e.Id, Checked = check.Contains(e.Id) };
-            if (e.IsDir) it.ForeColor = Theme.Link;
+            if (e.IsDir) it.ForeColor = Theme.LinkColor;
             it.SubItems.Add(e.IsDir ? "" : Bytes(e.Size));
             it.SubItems[1].ForeColor = Theme.Secondary;
             list.Items.Add(it);
