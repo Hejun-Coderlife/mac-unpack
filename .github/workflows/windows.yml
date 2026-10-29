@@ -83,6 +83,75 @@ jobs:
           if ((Get-Process Unpack -ErrorAction SilentlyContinue | Measure-Object).Count -gt 1) { throw "second instance did not hand over" }
           Stop-Process -Name Unpack -Force -ErrorAction SilentlyContinue
 
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress | Select-Object -Last 2
+          $iscc = (Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" | Select-Object -First 1).FullName
+          # 简体中文界面：新版 Inno Setup 自带，旧版从官方仓库取
+          $zh = Join-Path (Split-Path $iscc) "Languages\ChineseSimplified.isl"
+          if (Test-Path $zh) { Copy-Item $zh windows\ } else {
+            try { Invoke-WebRequest https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl -OutFile windows\ChineseSimplified.isl }
+            catch { Invoke-WebRequest https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/Unofficial/ChineseSimplified.isl -OutFile windows\ChineseSimplified.isl }
+          }
+          & $iscc /Q "/DSrc=$((Resolve-Path dist\Unpack).Path)" windows\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
+          Get-Item Unpack-Setup-x64.exe | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Unpack-Setup-x64
+          path: Unpack-Setup-x64.exe
+
+      - name: Installer test
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          function Shot($name) {
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("shots\$name.png"); $g.Dispose(); $bmp.Dispose()
+          }
+          # 安装界面第一页截个图就关掉
+          $w = Start-Process .\Unpack-Setup-x64.exe -PassThru; Start-Sleep 5; Shot "3-setup"; Stop-Process $w.Id -Force -ErrorAction SilentlyContinue
+          Get-Process | Where-Object { $_.ProcessName -like "Unpack-Setup*" -or $_.ProcessName -like "is-*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep 2
+          # 静默装给当前用户
+          $p = Start-Process .\Unpack-Setup-x64.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/TASKS=assoc,menu" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "setup exit $($p.ExitCode)" }
+          $app = "$env:LOCALAPPDATA\Programs\Unpack"
+          foreach ($f in "解压.exe", "7z.exe", "7z.dll", "archive.ico", "unins000.exe") { if (!(Test-Path "$app\$f")) { throw "missing $f" } }
+          foreach ($e in ".zip", ".7z", ".rar", ".001") {
+            $v = (Get-ItemProperty "HKCU:\Software\Classes\$e").'(default)'
+            if ($v -ne "Unpack.Archive") { throw "$e -> $v" }
+          }
+          $icon = (Get-ItemProperty "HKCU:\Software\Classes\Unpack.Archive\DefaultIcon").'(default)'; "icon: $icon"
+          $cmd = (Get-ItemProperty "HKCU:\Software\Classes\Unpack.Archive\shell\open\command").'(default)'; "open: $cmd"
+          if (!(Test-Path 'HKCU:\Software\Classes\*\shell\Unpack')) { throw "context menu missing" }
+          # 资源管理器里看图标：几种压缩包放一个文件夹，大图标视图
+          $d = "$env:USERPROFILE\Desktop\图标"; New-Item -ItemType Directory $d -Force | Out-Null
+          foreach ($n in "照片.zip", "资料.7z", "视频.part1.rar", "备份.tar.gz", "大文件.7z.001", "说明.txt") { Set-Content "$d\$n" "x" }
+          Start-Process explorer.exe $d; Start-Sleep 5
+          $sh = New-Object -ComObject Shell.Application
+          foreach ($win in $sh.Windows()) { try { if ($win.Document.Folder.Self.Path -eq $d) { $win.Document.CurrentViewMode = 1; $win.Document.IconSize = 96 } } catch {} }
+          Start-Sleep 3; Shot "4-explorer-icons"
+          # 双击压缩包确实交给解压.exe：用 shell 打开一个真 zip，看进程起来没有
+          & .\7zip\7z.exe a "$d\真的.zip" "$d\说明.txt" | Out-Null
+          $before = (Get-ChildItem $d).Count
+          Start-Process "$d\真的.zip"; Start-Sleep 8; Shot "5-double-click"
+          Get-ChildItem $d | Format-Table Name
+          if ((Get-ChildItem $d).Count -le $before) { throw "double-click did not extract" }
+          Stop-Process -Name Unpack -Force -ErrorAction SilentlyContinue
+          # 卸载：注册的东西都要清掉
+          $u = Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -PassThru -Wait
+          Start-Sleep 3
+          if (Test-Path "HKCU:\Software\Classes\Unpack.Archive") { throw "ProgID left after uninstall" }
+          if ((Get-ItemProperty "HKCU:\Software\Classes\.rar" -ErrorAction SilentlyContinue).'(default)' -eq "Unpack.Archive") { throw ".rar still associated" }
+          if (Test-Path 'HKCU:\Software\Classes\*\shell\Unpack') { throw "context menu left" }
+          if (Test-Path "$app\解压.exe") { throw "files left" }
+          "installer OK"
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
