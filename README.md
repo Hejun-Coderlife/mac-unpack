@@ -15,3 +15,16 @@ Mac 上的解压/压缩小工具：把压缩包拖进窗口（或双击、拖到
 自测（不弹窗）：`UNPACK_TEST=a.zip:b.7z UNPACK_DEST=/tmp/out [UNPACK_PW=密码] /Applications/解压.app/Contents/MacOS/Unpack`
 
 vendor/7zz 来自 7-Zip（www.7-zip.org，GNU LGPL）；vendor/unar 来自 The Unarchiver（LGPL）。
+
+## Windows 版
+
+`windows/` 里是 Windows 版（C# / .NET 8 WinForms，x64 单文件，不用装 .NET），功能和 Mac 版对齐：拖进来就解、分卷、密码本（用 Windows 账户 DPAPI 加密存在 `%APPDATA%\Unpack`）、GBK/日文/繁体 zip 自动识别编码、智能放置、.tar.gz 一步解到底、去垃圾文件、勾选部分文件解、拖文件夹压成 UTF-8 zip；设置里可把「用解压处理」加进资源管理器右键菜单（只写 HKCU，不要管理员）。
+
+- 引擎：放在 `解压.exe` 旁边的官方 7-Zip（`7z.exe` + `7z.dll`，自带 RAR 解码，`-mcp=` 在 Windows 上有效，所以不需要 unar / bsdtar）
+- 编译和打包在 GitHub Actions 的 Windows 机器上做（`.github/workflows/windows.yml`）：下载官方 7-Zip → `dotnet publish` → 打成 `Unpack-Windows-x64.zip` → 跑 `windows/tests/run_tests.py` 自测
+- 自测（不弹窗）：`set UNPACK_TEST=a.zip;b.7z` `set UNPACK_DEST=目录` [`UNPACK_PW=密码`] [`UNPACK_LOG=结果文件`]，再运行 `解压.exe`，有失败退出码为 1
+- 7-Zip 来自 www.7-zip.org（Igor Pavlov），GNU LGPL + unRAR 限制，许可证随包附带为「7-Zip License.txt」
+
+## Windows version
+
+`windows/` contains the Windows port (C# / .NET 8 WinForms, self-contained x64 single-file exe) with the same features. It bundles the official 7-Zip (`7z.exe` + `7z.dll`, which includes the RAR decoder) next to the exe. It is built, packaged as `Unpack-Windows-x64.zip` and self-tested by GitHub Actions on Windows. 7-Zip is © Igor Pavlov, licensed under GNU LGPL with the unRAR restriction; its license ships as "7-Zip License.txt".

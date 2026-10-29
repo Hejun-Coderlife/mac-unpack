@@ -1,0 +1,59 @@
+# Windows 版：编译成单文件 exe，配上官方 7-Zip（7z.exe + 7z.dll，自带 RAR 解码），打包并跑自测
+name: windows
+
+on:
+  push:
+    paths: ["windows/**", ".github/workflows/windows.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Get official 7-Zip
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://www.7-zip.org/a/7z2501-x64.exe -OutFile 7zsetup.exe
+          & "C:\Program Files\7-Zip\7z.exe" x 7zsetup.exe -o"7zip" -y | Out-Null
+          foreach ($f in "7z.exe", "7z.dll", "License.txt") { if (!(Test-Path "7zip\$f")) { throw "missing $f" } }
+          & .\7zip\7z.exe i | Select-Object -First 3
+
+      - name: Publish
+        shell: pwsh
+        run: dotnet publish windows/Unpack.csproj -c Release -r win-x64 -o publish
+
+      - name: Assemble
+        shell: pwsh
+        run: |
+          $d = "dist\Unpack"
+          New-Item -ItemType Directory $d | Out-Null
+          Copy-Item publish\Unpack.exe "$d\解压.exe"
+          Copy-Item 7zip\7z.exe, 7zip\7z.dll $d
+          Copy-Item 7zip\License.txt "$d\7-Zip License.txt"
+          Copy-Item windows\README.txt $d
+          Get-ChildItem $d | Format-Table Name, Length
+          & .\7zip\7z.exe a -tzip -mcu=on -mx=9 Unpack-Windows-x64.zip .\dist\Unpack\* | Out-Null
+          Get-Item Unpack-Windows-x64.zip | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Unpack-Windows-x64
+          path: Unpack-Windows-x64.zip
+
+      - name: Install WinRAR (for RAR tests, optional)
+        continue-on-error: true
+        shell: pwsh
+        run: choco install winrar -y --no-progress | Select-Object -Last 3
+
+      - name: Self-test
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
+        run: python windows/tests/run_tests.py dist\Unpack
