@@ -39,8 +39,8 @@ Name: "zh"; MessagesFile: "ChineseSimplified.isl"
 Name: "en"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
-zh.Assoc=双击压缩包用「解压」打开，并显示「解压」的文件图标
-en.Assoc=Open archives with Unpack and show its file icon
+zh.Assoc=把压缩包格式登记给「解压」（文件图标、双击打开）
+en.Assoc=Register archive types with Unpack (file icon, double-click)
 zh.Menu=在右键菜单里加「用「解压」处理」
 en.Menu=Add "Open with Unpack" to the right-click menu
 zh.Desktop=在桌面放快捷方式
@@ -51,6 +51,10 @@ zh.MenuText=用「解压」处理
 en.MenuText=Open with Unpack
 zh.Launch=打开「解压」
 en.Launch=Launch Unpack
+zh.AppTitle=解压
+en.AppTitle=Unpack
+zh.SetDefault=打开「默认应用」设置，把压缩包都改成用「解压」打开（Windows 不允许安装程序替你改）
+en.SetDefault=Open Default apps settings to make Unpack the default for archives (Windows doesn't let installers do this)
 
 [Tasks]
 Name: "assoc"; Description: "{cm:Assoc}"
@@ -73,9 +77,10 @@ Name: "{autodesktop}\解压"; Filename: "{app}\解压.exe"; Tasks: desktop
 [Registry]
 ; 文件类型 Unpack.Archive：名字、图标、双击打开的命令
 Root: HKA; Subkey: "Software\Classes\Unpack.Archive"; ValueType: string; ValueName: ""; ValueData: "{cm:TypeName}"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Unpack.Archive\Application"; ValueType: string; ValueName: "ApplicationName"; ValueData: "{cm:AppTitle}"
 Root: HKA; Subkey: "Software\Classes\Unpack.Archive\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: """{app}\archive.ico"",0"
 Root: HKA; Subkey: "Software\Classes\Unpack.Archive\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\解压.exe"" ""%1"""
-Root: HKA; Subkey: "Software\Classes\Applications\解压.exe"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "{cm:MenuText}"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Applications\解压.exe"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "{cm:AppTitle}"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Applications\解压.exe\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\解压.exe"" ""%1"""
 ; 让「设置 → 应用 → 默认应用」里能找到「解压」
 Root: HKA; Subkey: "Software\Unpack\Capabilities"; ValueType: string; ValueName: "ApplicationName"; ValueData: "解压"; Flags: uninsdeletekey
@@ -152,6 +157,9 @@ Root: HKA; Subkey: "Software\Classes\Directory\shell\Unpack\command"; ValueType:
 
 [Run]
 Filename: "{app}\解压.exe"; Description: "{cm:Launch}"; Flags: nowait postinstall skipifsilent
+; Windows 10/11 不让安装程序直接改默认打开方式：装完直接跳到「设置 → 默认应用 → 解压」那一页，用户点一下
+Filename: "ms-settings:defaultapps?registeredAppUser=Unpack"; Description: "{cm:SetDefault}"; Flags: shellexec postinstall skipifsilent nowait; Check: not IsAdminInstallMode
+Filename: "ms-settings:defaultapps?registeredAppMachine=Unpack"; Description: "{cm:SetDefault}"; Flags: shellexec postinstall skipifsilent nowait; Check: IsAdminInstallMode
 ; 软件里点「更新」时是静默安装，带 /RELAUNCH=1：装完把软件重新打开（用原来的用户身份，不带管理员权限）
 Filename: "{app}\解压.exe"; Flags: nowait runasoriginaluser; Check: Relaunch
 

@@ -137,16 +137,22 @@ jobs:
           # 资源管理器里看图标：几种压缩包放一个文件夹，大图标视图
           $d = "$env:USERPROFILE\Desktop\图标"; New-Item -ItemType Directory $d -Force | Out-Null
           foreach ($n in "照片.zip", "资料.7z", "视频.part1.rar", "备份.tar.gz", "大文件.7z.001", "说明.txt") { Set-Content "$d\$n" "x" }
-          Start-Process explorer.exe $d; Start-Sleep 5
+          Start-Process explorer.exe $d; Start-Sleep 8
           $sh = New-Object -ComObject Shell.Application
           foreach ($win in $sh.Windows()) { try { if ($win.Document.Folder.Self.Path -eq $d) { $win.Document.CurrentViewMode = 1; $win.Document.IconSize = 96 } } catch {} }
-          Start-Sleep 3; Shot "4-explorer-icons"
-          # 双击压缩包确实交给解压.exe：用 shell 打开一个真 zip，看进程起来没有
+          Start-Sleep 6; Shot "4-explorer-icons"
+          # 双击：zip/7z/rar 在 Windows 11 上归系统管（要用户在「默认应用」里点一次），程序没法替他选；
+          # 系统不认识的格式（分卷 .001）双击就该直接交给解压.exe 解开
+          & .\7zip\7z.exe a -v100k "$d\真的.7z" "$d\说明.txt" | Out-Null
+          $before = (Get-ChildItem $d).Count
+          Start-Process "$d\真的.7z.001"; Start-Sleep 8; Shot "5-double-click-001"
+          Get-ChildItem $d | Format-Table Name
+          if ((Get-ChildItem $d).Count -le $before) { throw "double-click .001 did not extract" }
+          # 「默认应用」里选了解压之后走的是注册的打开命令：照着命令手动跑一遍 zip
           & .\7zip\7z.exe a "$d\真的.zip" "$d\说明.txt" | Out-Null
           $before = (Get-ChildItem $d).Count
-          Start-Process "$d\真的.zip"; Start-Sleep 8; Shot "5-double-click"
-          Get-ChildItem $d | Format-Table Name
-          if ((Get-ChildItem $d).Count -le $before) { throw "double-click did not extract" }
+          Start-Process "$app\解压.exe" -ArgumentList "`"$d\真的.zip`""; Start-Sleep 8
+          if ((Get-ChildItem $d).Count -le $before) { throw "open command did not extract zip" }
           Stop-Process -Name Unpack -Force -ErrorAction SilentlyContinue
           # 覆盖升级（软件里点「更新」走的就是这条）：静默装同一个包 + /RELAUNCH=1，装完软件要自己重新打开
           $p = Start-Process .\Unpack-Setup-x64.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/RELAUNCH=1" -PassThru -Wait
