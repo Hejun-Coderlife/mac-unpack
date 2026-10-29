@@ -10,10 +10,13 @@
 - 乱码：别的电脑做的 GBK / 日文 / 繁体 zip 自动识别编码
 - 设置里可以把「用解压处理」加到资源管理器右键菜单（只改当前用户，不要管理员）
 
-两种用法：
-- 安装版 Unpack-Setup-x64.exe：双击压缩包就用「解压」打开，压缩包显示「解压」的文件图标；默认只装给当前用户，不要管理员；在「设置 → 应用」里能卸载，卸载会把注册的东西清干净
-- 免安装版：解压.exe 要和 7z.exe、7z.dll 放在同一个文件夹
+安装：下载 Unpack-Setup.exe 双击，点「安装」就好。不要管理员权限，装在 %LOCALAPPDATA%\Programs\Unpack，桌面和开始菜单各一个「解压」，装完自动打开。
+- 完成页上勾着「打开默认应用设置」：Windows 不允许安装程序替你改 zip、rar、7z 的默认打开方式，在那一页点一下「解压」，之后双击压缩包就用它解开，图标也换成「解压」的
+- 有新版本时窗口底部会提示，点「更新」才下载安装，装完自动重新打开
+- 卸载：「设置 → 应用 → 已安装的应用」里找「解压」，会把文件、文件类型登记、右键菜单、设置和密码本都删干净
+- 用过 v1.0 的 zip 版：直接装安装版，然后把原来那个 解压.exe 所在的文件夹删掉即可
+
 7z.exe / 7z.dll 来自 7-Zip（www.7-zip.org，Igor Pavlov），GNU LGPL + unRAR 限制，见「7-Zip License.txt」。
 
 Unpack for Windows: drop archives on the window to extract, drop folders/files to zip.
-Keep 解压.exe next to 7z.exe and 7z.dll. 7-Zip is © Igor Pavlov, GNU LGPL (see "7-Zip License.txt").
+Install with Unpack-Setup.exe (no admin needed). 7-Zip is © Igor Pavlov, GNU LGPL (see "7-Zip License.txt").

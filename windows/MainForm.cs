@@ -537,7 +537,7 @@ class SettingsForm : Form
         Box(L("解完在资源管理器里选中", "Show in Explorer when done"), p.Reveal, v => p.Reveal = v);
         Box(L("解完把压缩包移到回收站（分卷一起）", "Move archive (all parts) to Recycle Bin when done"), p.TrashAfter, v => p.TrashAfter = v);
         Box(L("双击压缩包打开时，解完自动退出", "Quit after extracting files opened from Explorer"), p.QuitAfter, v => p.QuitAfter = v);
-        Box(L("有新版本时提醒我（每天看一次）", "Tell me when a new version is out"), p.AutoUpdate, v => p.AutoUpdate = v);
+        Box(L("打开时检查有没有新版本", "Check for a new version on launch"), p.AutoUpdate, v => p.AutoUpdate = v);
         Box(L("资源管理器右键菜单加「用解压处理」", "Add “Open with Unpack” to the Explorer context menu"), ContextMenu.Installed, ContextMenu.Set);
         col.Controls.Add(Theme.RuleLine(new Padding(0, 8, 0, 8)));
         Box(L("输对的密码记进密码本（用 Windows 账户加密保存）", "Save correct passwords (encrypted with your Windows account)"), p.RememberPw, v => p.RememberPw = v);

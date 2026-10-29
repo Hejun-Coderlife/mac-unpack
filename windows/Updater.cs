@@ -1,5 +1,6 @@
-// 自动更新：每天最多问一次 GitHub 最新发布版；有新版就在状态栏提示（和 Mac 版 Updater 一样）
-// 安装版：点一下下载新的安装包，静默装好后重新打开（设置、密码本都在 %APPDATA%，不受影响）；免安装版换不了自己，打开下载页
+// 自动更新：每次打开问一下 GitHub 最新发布版；有新版就在状态栏提示，不会自己悄悄更新
+// 安装版：用户点「更新」才下载新的安装包，静默装好后重新打开（设置、密码本都在 %APPDATA%，不受影响）；
+// 不是装出来的（v1.0 的 zip 版）换不了自己，点了就打开下载页
 using System.Diagnostics;
 using System.Text.Json;
 
@@ -9,7 +10,7 @@ static class Updater
 {
     const string Api = "https://api.github.com/repos/Hejun-Coderlife/mac-unpack/releases/latest";
     public const string Page = "https://github.com/Hejun-Coderlife/mac-unpack/releases/latest";
-    const string AssetName = "Unpack-Setup-x64.exe";
+    const string AssetName = "Unpack-Setup.exe";
     public static readonly Version Current = typeof(Updater).Assembly.GetName().Version ?? new Version(0, 0);
 
     public enum State { Idle, Available, Working, Failed }
@@ -53,7 +54,6 @@ static class Updater
         var p = Prefs.Current;
         if (!p.AutoUpdate) return;
         ShowPending();
-        if (DateTime.UtcNow - p.LastUpdateCheck < TimeSpan.FromDays(1)) return;
         try
         {
             using var http = Client();
@@ -79,10 +79,7 @@ static class Updater
         {
             var file = Path.Combine(Path.GetTempPath(), $"Unpack-Setup-{p.LatestVersion}.exe");
             using (var http = Client()) await File.WriteAllBytesAsync(file, await http.GetByteArrayAsync(p.LatestAsset));
-            // 原来装给谁就还装给谁：在 %LOCALAPPDATA% 里是当前用户，否则是所有用户（会弹一次管理员确认）
-            var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            var mode = AppContext.BaseDirectory.StartsWith(local, StringComparison.OrdinalIgnoreCase) ? "/CURRENTUSER" : "/ALLUSERS";
-            Process.Start(new ProcessStartInfo(file, $"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART {mode} /RELAUNCH=1") { UseShellExecute = true });
+            Process.Start(new ProcessStartInfo(file, "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1") { UseShellExecute = true });
             Application.Exit();
         }
         catch { Set(State.Failed); }

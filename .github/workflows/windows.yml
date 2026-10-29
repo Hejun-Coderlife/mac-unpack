@@ -101,14 +101,16 @@ jobs:
           }
           & $iscc /Q "/DSrc=$((Resolve-Path dist\Unpack).Path)" "/DAppVer=$((Get-Content VERSION).Trim())" windows\installer.iss
           if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
-          Get-Item Unpack-Setup-x64.exe | Format-Table Name, Length
+          Get-Item Unpack-Setup.exe | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Unpack-Setup-x64
-          path: Unpack-Setup-x64.exe
+          name: Unpack-Setup
+          path: Unpack-Setup.exe
 
-      - name: Installer test   # 等安装程序用 WaitForExit：pwsh 的 Start-Process -Wait 会连子进程一起等，装完重新打开的解压.exe 一直开着就卡死
+      # 安装 → 图标 → 双击 → 升级 → 卸载，整套走一遍
+      # 等安装程序用 WaitForExit：pwsh 的 Start-Process -Wait 会连子进程一起等，装完自动打开的解压.exe 一直开着就卡死
+      - name: Installer test
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -118,62 +120,95 @@ jobs:
             $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
             $bmp.Save("shots\$name.png"); $g.Dispose(); $bmp.Dispose()
           }
-          # 安装界面第一页截个图就关掉
-          $w = Start-Process .\Unpack-Setup-x64.exe -PassThru; Start-Sleep 5; Shot "3-setup"; Stop-Process $w.Id -Force -ErrorAction SilentlyContinue
-          Get-Process | Where-Object { $_.ProcessName -like "Unpack-Setup*" -or $_.ProcessName -like "is-*" } | Stop-Process -Force -ErrorAction SilentlyContinue
-          Start-Sleep 2
-          # 静默装给当前用户
-          $p = Start-Process .\Unpack-Setup-x64.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/TASKS=assoc,menu" -PassThru; $p.WaitForExit()
-          if ($p.ExitCode -ne 0) { throw "setup exit $($p.ExitCode)" }
+          function Running { [bool](Get-Process -Name "解压" -ErrorAction SilentlyContinue) }
+          function WaitRunning { for ($i = 0; $i -lt 20 -and !(Running); $i++) { Start-Sleep 1 }; Running }
+          Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue
+          # 前面 RAR 自测装了 WinRAR：卸掉，免得双击时 Windows 因为「有新的应用」先弹选择框
+          choco uninstall winrar -y --no-progress | Select-Object -Last 1
+          # 模拟 v1.0 zip 版用户开过右键菜单（指向旧文件夹里的解压.exe）：装完应改指到新位置
+          $old = (Resolve-Path "dist\Unpack\解压.exe").Path
+          foreach ($k in 'HKCU:\Software\Classes\*\shell\Unpack', 'HKCU:\Software\Classes\Directory\shell\Unpack') {
+            New-Item -Path "$k\command" -Force | Out-Null
+            Set-Item -LiteralPath $k -Value "用「解压」处理"; Set-Item -LiteralPath "$k\command" -Value "`"$old`" `"%1`""
+          }
+
+          # 1. 像普通人那样装：双击安装程序 → 截图 → 按回车（「安装」）→ 应该自动打开解压 → 完成页截图
+          $w = Start-Process .\Unpack-Setup.exe -PassThru; Start-Sleep 6; Shot "3-setup"
+          $wiz = Get-Process | Where-Object { $_.ProcessName -like "Unpack-Setup*" -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+          $ws = New-Object -ComObject WScript.Shell; [void]$ws.AppActivate($wiz.Id); Start-Sleep 1
+          [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+          if (!(WaitRunning)) { Shot "3b-setup-stuck"; throw "app not opened automatically after install" }
+          Start-Sleep 3; Shot "3c-setup-finished"
+          Get-Process | Where-Object { $_.ProcessName -like "Unpack-Setup*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue
           $app = "$env:LOCALAPPDATA\Programs\Unpack"
           foreach ($f in "解压.exe", "7z.exe", "7z.dll", "archive.ico", "unins000.exe") { if (!(Test-Path "$app\$f")) { throw "missing $f" } }
+          # 桌面、开始菜单各只有一个「解压」
+          $desk = [Environment]::GetFolderPath("Desktop"); $menu = [Environment]::GetFolderPath("Programs")
+          $dl = @(Get-ChildItem $desk -Filter *.lnk | Where-Object { $_.BaseName -match "解压|Unpack" }); "desktop: $($dl.Name)"
+          $ml = @(Get-ChildItem $menu -Recurse | Where-Object { $_.BaseName -match "解压|Unpack" }); "start menu: $($ml.Name)"
+          if ($dl.Count -ne 1 -or $ml.Count -ne 1) { throw "shortcuts: desktop $($dl.Count), start menu $($ml.Count)" }
+          # 「设置 → 应用」里能看到、能卸载
+          $un = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" | Where-Object { $_.DisplayName -eq "解压" }
+          if (!$un) { throw "not in Apps list" }; "apps list: $($un.DisplayName) $($un.DisplayVersion)"
           foreach ($e in ".zip", ".7z", ".rar", ".001") {
             $v = (Get-ItemProperty "HKCU:\Software\Classes\$e").'(default)'
             if ($v -ne "Unpack.Archive") { throw "$e -> $v" }
           }
-          $icon = (Get-ItemProperty "HKCU:\Software\Classes\Unpack.Archive\DefaultIcon").'(default)'; "icon: $icon"
-          $cmd = (Get-ItemProperty "HKCU:\Software\Classes\Unpack.Archive\shell\open\command").'(default)'; "open: $cmd"
-          if (!(Test-Path 'HKCU:\Software\Classes\*\shell\Unpack')) { throw "context menu missing" }
-          # 资源管理器里看图标：几种压缩包放一个文件夹，大图标视图
-          $d = "$env:USERPROFILE\Desktop\图标"; New-Item -ItemType Directory $d -Force | Out-Null
+          $mc = (Get-Item -LiteralPath 'HKCU:\Software\Classes\*\shell\Unpack\command').GetValue(""); "menu: $mc"
+          if ($mc -notlike "*$app*") { throw "old context menu not repointed" }
+
+          # 2. 图标：几种压缩包放一个文件夹，大图标视图
+          $d = "$desk\图标"; New-Item -ItemType Directory $d -Force | Out-Null
           foreach ($n in "照片.zip", "资料.7z", "视频.part1.rar", "备份.tar.gz", "大文件.7z.001", "说明.txt") { Set-Content "$d\$n" "x" }
           Start-Process explorer.exe $d; Start-Sleep 8
           $sh = New-Object -ComObject Shell.Application
           foreach ($win in $sh.Windows()) { try { if ($win.Document.Folder.Self.Path -eq $d) { $win.Document.CurrentViewMode = 1; $win.Document.IconSize = 96 } } catch {} }
           Start-Sleep 6; Shot "4-explorer-icons"
-          # 双击：zip/7z/rar 在 Windows 11 上归系统管（要用户在「默认应用」里点一次），程序没法替他选；
-          # 系统不认识的格式（分卷 .001）双击就该直接交给解压.exe 解开
+
+          # 3. 双击：系统不管的格式（分卷 .001）双击直接解开；zip 是系统管的，第一次会问用什么打开（截图看）
           & .\7zip\7z.exe a -v100k "$d\真的.7z" "$d\说明.txt" | Out-Null
-          # 只截图看「默认应用」那栏是不是解压：机器上还有别的解压软件（这里装了 WinRAR）时 Windows 11 会先问一次，这一步只能用户点
-          Start-Process "$d\真的.7z.001"; Start-Sleep 6; Shot "5-double-click-001"
+          $before = (Get-ChildItem $d).Count
+          Start-Process "$d\真的.7z.001"; Start-Sleep 8; Shot "5-double-click-001"
+          Get-ChildItem $d | Format-Table Name
+          if ((Get-ChildItem $d).Count -le $before) { throw "double-click .001 did not extract" }
           Get-Process OpenWith -ErrorAction SilentlyContinue | Stop-Process -Force
           Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue
-          $before = (Get-ChildItem $d).Count
-          Start-Process "$app\解压.exe" -ArgumentList "`"$d\真的.7z.001`""; Start-Sleep 8
-          if ((Get-ChildItem $d).Count -le $before) { throw "open command did not extract .001" }
-          # 「默认应用」里选了解压之后走的是注册的打开命令：照着命令手动跑一遍 zip
           & .\7zip\7z.exe a "$d\真的.zip" "$d\说明.txt" | Out-Null
+          Start-Process "$d\真的.zip"; Start-Sleep 6; Shot "6-double-click-zip"
+          Get-Process OpenWith -ErrorAction SilentlyContinue | Stop-Process -Force
+          Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue
+          # 在「默认应用」里选了解压以后，双击 zip 走的就是注册的打开命令：照着跑一遍
           $before = (Get-ChildItem $d).Count
+          $cmd = (Get-ItemProperty "HKCU:\Software\Classes\Unpack.Archive\shell\open\command").'(default)'; "open: $cmd"
           Start-Process "$app\解压.exe" -ArgumentList "`"$d\真的.zip`""; Start-Sleep 8
           if ((Get-ChildItem $d).Count -le $before) { throw "open command did not extract zip" }
           Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue
-          # 覆盖升级（软件里点「更新」走的就是这条）：静默装同一个包 + /RELAUNCH=1，装完软件要自己重新打开
-          $p = Start-Process .\Unpack-Setup-x64.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/RELAUNCH=1", "/LOG=$env:TEMP\upgrade.log" -PassThru; $p.WaitForExit()
+
+          # 4. 升级（软件里点「更新」走的就是这条）：静默装 + /RELAUNCH=1，装完软件要自己重新打开
+          $p = Start-Process .\Unpack-Setup.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/RELAUNCH=1", "/LOG=$env:TEMP\upgrade.log" -PassThru; $p.WaitForExit()
           if ($p.ExitCode -ne 0) { throw "upgrade exit $($p.ExitCode)" }
-          for ($i = 0; $i -lt 15 -and !(Get-Process -Name "解压" -ErrorAction SilentlyContinue); $i++) { Start-Sleep 1 }
-          if (!(Get-Process -Name "解压" -ErrorAction SilentlyContinue)) { Get-Content "$env:TEMP\upgrade.log" | Select-String -Pattern "Run|Filename|Process|exit|Error" ; throw "not relaunched after upgrade" }
+          if (!(WaitRunning)) { Get-Content "$env:TEMP\upgrade.log" | Select-String -Pattern "Run|Filename|exit|Error"; throw "not relaunched after upgrade" }
           if ((Get-ItemProperty "HKCU:\Software\Classes\.rar").'(default)' -ne "Unpack.Archive") { throw "association lost after upgrade" }
-          Shot "6-after-upgrade"
+          Shot "7-after-upgrade"
           Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue
-                    # 卸载：注册的东西都要清掉
+
+          # 5. 卸载：文件、快捷方式、文件类型、右键菜单、设置都要清掉
           $u = Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -PassThru; $u.WaitForExit()
           # 卸载程序会把自己复制到临时目录再跑，原进程马上就退：等文件真被删掉
           for ($i = 0; $i -lt 30 -and (Test-Path "$app\解压.exe"); $i++) { Start-Sleep 1 }
           Start-Sleep 2
-          if (Test-Path "HKCU:\Software\Classes\Unpack.Archive") { throw "ProgID left after uninstall" }
-          if ((Get-ItemProperty "HKCU:\Software\Classes\.rar" -ErrorAction SilentlyContinue).'(default)' -eq "Unpack.Archive") { throw ".rar still associated" }
-          if (Test-Path 'HKCU:\Software\Classes\*\shell\Unpack') { throw "context menu left" }
-          if (Test-Path "$app\解压.exe") { throw "files left" }
+          $left = @()
+          if (Test-Path "$app\解压.exe") { $left += "files" }
+          if (Test-Path "HKCU:\Software\Classes\Unpack.Archive") { $left += "ProgID" }
+          if ((Get-ItemProperty "HKCU:\Software\Classes\.rar" -ErrorAction SilentlyContinue).'(default)' -eq "Unpack.Archive") { $left += ".rar" }
+          if (Test-Path -LiteralPath 'HKCU:\Software\Classes\*\shell\Unpack') { $left += "context menu" }
+          if (Test-Path "HKCU:\Software\Unpack") { $left += "capabilities" }
+          if (@(Get-ChildItem $desk -Filter *.lnk | Where-Object { $_.BaseName -match "解压|Unpack" }).Count) { $left += "desktop shortcut" }
+          if (@(Get-ChildItem $menu -Recurse | Where-Object { $_.BaseName -match "解压|Unpack" }).Count) { $left += "start menu" }
+          if (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" | Where-Object { $_.DisplayName -eq "解压" }) { $left += "apps list" }
+          if (Test-Path "$env:APPDATA\Unpack") { $left += "settings" }
+          if ($left.Count) { throw "left after uninstall: $($left -join ', ')" }
           "installer OK"
 
       - name: Attach to release
@@ -181,7 +216,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" Unpack-Setup-x64.exe --clobber   # Windows 只发一个 exe（安装包），不发一堆文件的 zip
+        run: gh release upload "${{ github.event.release.tag_name }}" Unpack-Setup.exe --clobber   # Windows 只发一个 exe（安装包），不发一堆文件的 zip
 
       - uses: actions/upload-artifact@v4
         if: always()
