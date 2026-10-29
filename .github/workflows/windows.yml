@@ -85,8 +85,8 @@ jobs:
           Start-Process $exe -ArgumentList "`"$((Resolve-Path demo\photos.zip).Path)`"", "`"$((Resolve-Path demo\locked.7z).Path)`""
           Start-Sleep 6; Shot "2-jobs"
           if ($p.HasExited) { throw "main window exited" }
-          if ((Get-Process Unpack -ErrorAction SilentlyContinue | Measure-Object).Count -gt 1) { throw "second instance did not hand over" }
-          Stop-Process -Name Unpack -Force -ErrorAction SilentlyContinue
+          if ((Get-Process -Name "解压" -ErrorAction SilentlyContinue | Measure-Object).Count -gt 1) { throw "second instance did not hand over" }
+          Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue
 
       - name: Build installer
         shell: pwsh
@@ -147,7 +147,7 @@ jobs:
           # 只截图看「默认应用」那栏是不是解压：机器上还有别的解压软件（这里装了 WinRAR）时 Windows 11 会先问一次，这一步只能用户点
           Start-Process "$d\真的.7z.001"; Start-Sleep 6; Shot "5-double-click-001"
           Get-Process OpenWith -ErrorAction SilentlyContinue | Stop-Process -Force
-          Stop-Process -Name Unpack -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue
           $before = (Get-ChildItem $d).Count
           Start-Process "$app\解压.exe" -ArgumentList "`"$d\真的.7z.001`""; Start-Sleep 8
           if ((Get-ChildItem $d).Count -le $before) { throw "open command did not extract .001" }
@@ -156,15 +156,15 @@ jobs:
           $before = (Get-ChildItem $d).Count
           Start-Process "$app\解压.exe" -ArgumentList "`"$d\真的.zip`""; Start-Sleep 8
           if ((Get-ChildItem $d).Count -le $before) { throw "open command did not extract zip" }
-          Stop-Process -Name Unpack -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue
           # 覆盖升级（软件里点「更新」走的就是这条）：静默装同一个包 + /RELAUNCH=1，装完软件要自己重新打开
           $p = Start-Process .\Unpack-Setup-x64.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/RELAUNCH=1", "/LOG=$env:TEMP\upgrade.log" -PassThru -Wait
           if ($p.ExitCode -ne 0) { throw "upgrade exit $($p.ExitCode)" }
-          for ($i = 0; $i -lt 15 -and !(Get-Process Unpack -ErrorAction SilentlyContinue); $i++) { Start-Sleep 1 }
-          if (!(Get-Process Unpack -ErrorAction SilentlyContinue)) { Get-Content "$env:TEMP\upgrade.log" | Select-String -Pattern "Run|Filename|Process|exit|Error" ; throw "not relaunched after upgrade" }
+          for ($i = 0; $i -lt 15 -and !(Get-Process -Name "解压" -ErrorAction SilentlyContinue); $i++) { Start-Sleep 1 }
+          if (!(Get-Process -Name "解压" -ErrorAction SilentlyContinue)) { Get-Content "$env:TEMP\upgrade.log" | Select-String -Pattern "Run|Filename|Process|exit|Error" ; throw "not relaunched after upgrade" }
           if ((Get-ItemProperty "HKCU:\Software\Classes\.rar").'(default)' -ne "Unpack.Archive") { throw "association lost after upgrade" }
           Shot "6-after-upgrade"
-          Stop-Process -Name Unpack -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue
                     # 卸载：注册的东西都要清掉
           $u = Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -PassThru -Wait
           Start-Sleep 3
