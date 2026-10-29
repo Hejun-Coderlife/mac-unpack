@@ -213,25 +213,12 @@ class MainForm : Form
     {
         content.SuspendLayout();
         content.Controls.Clear();
-        content.Controls.Add(Theme.Lbl(AppName, Theme.Heading, 22, true, new Padding(0, 0, 0, 10)));
-        content.Controls.Add(Theme.RuleLine(new Padding(0, 0, 0, 18)));
         var q = JobQueue.Shared;
-        if (q.Jobs.Count == 0)
-        {
-            content.Controls.Add(Para(L("把压缩包拖进这个窗口的任意位置就会解开，也可以 选择文件。", "Drop an archive anywhere in this window to extract it, or choose a file."),
-                L("选择文件", "choose a file"), 12.5f, Theme.Text, new Padding(0, 0, 0, 16)));
-            content.Controls.Add(Theme.Lbl(L("支持 zip、7z、rar、tar、gz、bz2、xz、zst、iso、cab，以及分卷压缩包。",
-                "Works with zip, 7z, rar, tar, gz, bz2, xz, zst, iso, cab and split archives."), Theme.Secondary, 11.5f, false, new Padding(0, 0, 0, 16)));
-            content.Controls.Add(new Quote(string.Join("\n", new[]
-            {
-                L("加密的包，先用你存过的密码自动试。", "Encrypted archives are tried with your saved passwords first."),
-                L("别的电脑上打的包，中文文件名自动修好乱码。", "Garbled filenames from other systems are fixed automatically."),
-                L("分卷包拖哪一卷都行；.tar.gz 一步解到底。", "Drop any part of a split archive; .tar.gz unpacks in one step."),
-            })) { Margin = new Padding(0, 0, 0, 16) });
-            content.Controls.Add(Theme.Lbl(L("拖进文件夹或普通文件，则压缩成 zip。", "Drop folders or plain files to make a zip."), Theme.Faint, 10));
-        }
+        if (q.Jobs.Count == 0) content.Controls.Add(Intro());
         else
         {
+            content.Controls.Add(Theme.Lbl(AppName, Theme.Heading, 22, true, new Padding(0, 0, 0, 10)));
+            content.Controls.Add(Theme.RuleLine(new Padding(0, 0, 0, 18)));
             content.Controls.Add(Para(L("继续把压缩包拖进来，或者 选择文件。", "Drop more archives, or choose files."), L("选择文件", "choose files"),
                 10.5f, Theme.Secondary, new Padding(0, 0, 0, 6)));
             foreach (var id in rows.Keys.Except(q.Jobs.Select(j => j.Id)).ToList()) { rows[id].Dispose(); rows.Remove(id); }
@@ -246,6 +233,32 @@ class MainForm : Form
         UpdateChrome();
     }
 
+    /// 空窗口：和宣传视频结尾那张卡一样——图标 + 名字 + 一句话。格式、密码、乱码这些都是自动的，不用在这里讲
+    Control Intro()
+    {
+        const int iconSize = 84, gap = 22;
+        var icon = new PictureBox { Size = new Size(iconSize, iconSize), SizeMode = PictureBoxSizeMode.Zoom, Margin = new Padding(0, 0, gap, 0), BackColor = Color.Transparent };
+        try { icon.Image = Icon.ExtractIcon(Environment.ProcessPath ?? Application.ExecutablePath, 0, 256)?.ToBitmap(); } catch { }
+        var text = Theme.Column();
+        text.Controls.Add(Theme.Lbl(AppName, Theme.Heading, 24, true, new Padding(0, 0, 0, 6)));
+        var rule = Theme.RuleLine(new Padding(0, 0, 0, 10)); rule.Width = 200;
+        text.Controls.Add(rule);
+        text.Controls.Add(Theme.Lbl(L("拖进来，就解开。", "Drop it in. It opens."), Theme.Text, 11, true, new Padding(0, 0, 0, 6)));
+        text.Controls.Add(Theme.Lbl(L("zip · 7z · rar · 分卷 · 加密包 · 乱码修复", "zip · 7z · rar · split · encrypted · garbled names"), Theme.Faint, 8.5f));
+        var card = Theme.Row();
+        card.Controls.Add(icon); card.Controls.Add(text);
+        // 图标和右边三行文字上下居中（不算下面的「选择文件」）
+        card.Layout += (_, _) => icon.Margin = new Padding(0, Math.Max(0, (text.Height - iconSize) / 2), gap, 0);
+        text.Layout += (_, _) => icon.Margin = new Padding(0, Math.Max(0, (text.Height - iconSize) / 2), gap, 0);
+        var pick = Theme.Row(new Padding(iconSize + gap, 18, 0, 0));
+        pick.Controls.Add(Theme.Link(L("选择文件", "Choose a file"), PickFiles, null, 10));
+        pick.Controls.Add(Theme.Lbl("Ctrl+O", Theme.Faint, 10, false, new Padding(14, 0, 0, 0)));
+        var box = Theme.Column();
+        box.Controls.Add(card); box.Controls.Add(pick);
+        box.Tag = "intro";
+        return box;
+    }
+
     /// 正文里带一个可点的「选择文件」链接
     LinkLabel Para(string text, string link, float size, Color color, Padding margin)
     {
@@ -257,6 +270,13 @@ class MainForm : Form
 
     void Relayout()
     {
+        if (content.Controls.Count == 1 && content.Controls[0].Tag is "intro")
+        {
+            // 空窗口：名片卡放在正中间
+            content.Padding = Padding.Empty;
+            content.Location = new Point(Math.Max(0, (page.ClientSize.Width - content.Width) / 2), Math.Max(0, (page.ClientSize.Height - content.Height) / 2));
+            return;
+        }
         int avail = page.ClientSize.Width - 88;
         W = Math.Max(300, Math.Min(600, avail));
         content.Location = new Point(Math.Max(44, (page.ClientSize.Width - W) / 2) + page.AutoScrollPosition.X, 46 + page.AutoScrollPosition.Y);

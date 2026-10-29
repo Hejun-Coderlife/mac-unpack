@@ -40,7 +40,7 @@ class Prefs
     public bool CleanJunk { get; set; } = true;     // 删掉 __MACOSX、.DS_Store、Thumbs.db 这类垃圾
     public bool Reveal { get; set; } = true;        // 解完在资源管理器里选中
     public bool NestedTar { get; set; } = true;     // .tar.gz 这类一次解到底
-    public bool QuitAfter { get; set; } = false;    // 双击压缩包打开时，全部解完自动退出
+    public bool QuitAfter { get; set; } = true;     // 双击压缩包打开时，全部解完自动退出
     public bool RememberPw { get; set; } = true;    // 输对的密码记进密码本
 
     public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Unpack");
