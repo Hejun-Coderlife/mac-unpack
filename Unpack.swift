@@ -25,10 +25,14 @@ enum Pref {
     static let quitAfter = "quitAfter"   // 双击压缩包打开时，全部解完自动退出
     static let rememberPw = "rememberPw" // 输对的密码记进密码本
     static let autoUpdate = "autoUpdate" // 每天看一次 GitHub 上有没有新版本
+    static let format = "format"         // 拖进来压缩时用的格式：zip / 7z
+    static let level = "level"           // 压缩程度：0 只打包 / 1 快 / 5 标准 / 9 最小
+    static let browseOnOpen = "browseOnOpen" // 双击压缩包时先看内容，不直接解开
     static let lastCheck = "lastUpdateCheck", latestVersion = "latestVersion", latestAsset = "latestAsset"
     static func register() {
         UserDefaults.standard.register(defaults: [dest: "", trashAfter: false, cleanJunk: true, reveal: true,
-                                                  nestedTar: true, quitAfter: true, rememberPw: true, autoUpdate: true])
+                                                  nestedTar: true, quitAfter: true, rememberPw: true, autoUpdate: true,
+                                                  format: "zip", level: 5, browseOnOpen: false])
     }
     static func on(_ k: String) -> Bool { UserDefaults.standard.bool(forKey: k) }
 }
@@ -69,11 +73,13 @@ struct Entry: Identifiable, Hashable {
     let size: Int64
     let isDir: Bool
     let encrypted: Bool
+    var method = ""        // 比如 "AES-256 Deflate"：往加密 zip 里加文件时沿用同一种加密
 }
 
 struct Listing {
     var type = ""
     var entries: [Entry] = []
+    var headerEncrypted = false   // 文件名也加密了（7z 的「加密文件名」）：往里加文件时要保持
     var anyEncrypted: Bool { entries.contains { $0.encrypted } }
     var totalSize: Int64 { entries.reduce(0) { $0 + $1.size } }
 }
@@ -117,11 +123,12 @@ enum SevenZip {
     struct Result { var code: Int32; var out: String; var err: String; var all: String { out + "\n" + err } }
 
     /// 跑一次 7zz；onOut 收到标准输出的每一块（进度百分比在里面）
-    static func run(_ args: [String], exe: String = bin, runner: Runner? = nil,
+    static func run(_ args: [String], exe: String = bin, cwd: URL? = nil, runner: Runner? = nil,
                     onOut: ((String) -> Void)? = nil, onErr: ((String) -> Void)? = nil) -> Result {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: exe)
         p.arguments = args
+        if let cwd { p.currentDirectoryURL = cwd }   // 往包里加文件：在暂存目录里跑，传相对路径，包里就是这个路径
         // 从访达启动时没有 LANG，7-Zip 会按 C 区域处理文件名，中文全变问号——强制 UTF-8
         var env = ProcessInfo.processInfo.environment
         env["LANG"] = "en_US.UTF-8"; env["LC_ALL"] = "en_US.UTF-8"
@@ -207,7 +214,7 @@ enum SevenZip {
             listing.entries.append(Entry(id: listing.entries.count, path: path,
                                          size: Int64(f["Size"] ?? "") ?? 0,
                                          isDir: f["Folder"] == "+" || (f["Attributes"] ?? "").hasPrefix("D"),
-                                         encrypted: f["Encrypted"] == "+"))
+                                         encrypted: f["Encrypted"] == "+", method: f["Method"] ?? ""))
         }
         return listing
     }
@@ -365,6 +372,28 @@ enum Archive {
     }
 }
 
+// ---- 压缩选项：直接拖进来就用设置里的格式和程度；按住 ⌥ 拖进来（或 ⌘N）可以另设名字、密码、分卷 ----
+struct CompressOptions {
+    var name = ""            // 空 = 按拖进来的东西起名
+    var format = "zip"       // zip / 7z
+    var level = 5            // 0 只打包 / 1 快 / 5 标准 / 9 最小
+    var password = ""
+    var encryptNames = true  // 7z 才有：连文件名也加密，不输密码看不到里面有什么
+    var splitMB = 0          // 0 = 不分卷
+
+    static func fromPrefs() -> CompressOptions {
+        let d = UserDefaults.standard
+        return CompressOptions(format: d.string(forKey: Pref.format) == "7z" ? "7z" : "zip", level: d.integer(forKey: Pref.level))
+    }
+    static func defaultName(_ srcs: [URL]) -> String {
+        srcs.count == 1 ? srcs[0].lastPathComponent : L("归档", "Archive")
+    }
+    static let levels: [(Int, String)] = [(0, L("只打包，不压缩", "Store only")), (1, L("快", "Fast")),
+                                          (5, L("标准", "Normal")), (9, L("最小（慢）", "Smallest (slow)"))]
+    static let splits: [(Int, String)] = [(0, L("不分卷", "No split")), (25, L("每卷 25 MB（邮件附件）", "25 MB parts (email)")),
+                                          (100, "100 MB"), (1000, "1 GB"), (4000, L("4 GB（U 盘 FAT32）", "4 GB (FAT32 drives)"))]
+}
+
 /// 同名已存在就加编号：资料 → 资料 2 → 资料 3
 func uniqueURL(_ u: URL) -> URL {
     let fm = FileManager.default
@@ -398,10 +427,12 @@ enum Engine {
         switch SevenZip.list(arc, password: given ?? "") {
         case .failure(.wrongPassword):   // 文件名也加密了（7z/rar 的「加密文件名」）
             if given != nil { return .failure(.wrongPassword) }
-            for c in book() { if case .success(let l) = SevenZip.list(arc, password: c) { return .success((l, c)) } }
+            for c in book() { if case .success(var l) = SevenZip.list(arc, password: c) { l.headerEncrypted = true; return .success((l, c)) } }
             return .failure(.needPassword)
         case .failure(let e): return .failure(e)
-        case .success(let l):
+        case .success(var l):
+            // 用手输的密码读出来的：不带密码读不读得出，决定了文件名是不是也加密了
+            if let given, !given.isEmpty, case .failure(.wrongPassword) = SevenZip.list(arc, password: "") { l.headerEncrypted = true }
             guard let probe = l.entries.filter({ $0.encrypted && !$0.isDir }).min(by: { $0.size < $1.size }) else {
                 return .success((l, given))
             }
@@ -548,17 +579,37 @@ enum Engine {
         })
     }
 
-    static func compress(_ srcs: [URL], runner: Runner, progress: @escaping (Progress) -> Void) -> Swift.Result<URL, ZError> {
+    static func compress(_ srcs: [URL], options o: CompressOptions, runner: Runner, progress: @escaping (Progress) -> Void) -> Swift.Result<URL, ZError> {
+        let fm = FileManager.default
         let parent = destDir(for: srcs[0])
-        let name = srcs.count == 1 ? srcs[0].lastPathComponent : L("归档", "Archive")
-        let out = uniqueURL(parent.appendingPathComponent(name + ".zip"))
+        let name = o.name.isEmpty ? CompressOptions.defaultName(srcs) : o.name
+        // 分卷时实际文件是 名字.zip.001、.002…：编号要躲开这些已经存在的
+        var out = parent.appendingPathComponent(name + "." + o.format), i = 1
+        while fm.fileExists(atPath: out.path) || fm.fileExists(atPath: out.path + ".001") {
+            i += 1
+            out = parent.appendingPathComponent("\(name) \(i).\(o.format)")
+        }
         let total = srcs.reduce(Int64(0)) { $0 + sizeOf($1) }
-        // -mcu=on：文件名一律存 UTF-8 并打标记，发到 Windows 上也不乱码；不带 Mac 的 .DS_Store 和 ._ 资源文件
-        let args = ["a", "-tzip", "-mcu=on", "-mx=5", "-bsp1", "-bso0", "-bse2", "-sccUTF-8",
-                    "-xr!.DS_Store", "-xr!__MACOSX", "-xr!._*", out.path] + srcs.map(\.path)
+        // zip 用 -mcu=on：文件名一律存 UTF-8 并打标记，发到 Windows 上也不乱码；不带 Mac 的 .DS_Store 和 ._ 资源文件
+        var args = ["a", "-t" + o.format, "-mx=\(o.level)", "-bsp1", "-bso0", "-bse2", "-sccUTF-8",
+                    "-xr!.DS_Store", "-xr!__MACOSX", "-xr!._*"]
+        if o.format == "zip" { args.append("-mcu=on") }
+        if !o.password.isEmpty {
+            args.append("-p" + o.password)
+            args.append(o.format == "zip" ? "-mem=AES256" : "-mhe=" + (o.encryptNames ? "on" : "off"))
+        }
+        if o.splitMB > 0 { args.append("-v\(o.splitMB)m") }
+        args += [out.path] + srcs.map(\.path)
         let r = run7z(args, total: total, label: L("压缩", "Compressing"), runner: runner, progress: progress)
-        if r.code != 0 { try? FileManager.default.removeItem(at: out); return .failure(SevenZip.classify(r, runner: runner)) }
-        return .success(out)
+        let parts = Archive.volumes(URL(fileURLWithPath: out.path + ".001"))
+        if r.code != 0 {
+            try? fm.removeItem(at: out)
+            if o.splitMB > 0 { parts.forEach { try? fm.removeItem(at: $0) } }
+            return .failure(SevenZip.classify(r, runner: runner))
+        }
+        // 设了分卷但没超过一卷：7-Zip 也会出一个 .001，改回正常名字
+        if o.splitMB > 0, parts.count == 1 { try? fm.moveItem(at: parts[0], to: out) }
+        return .success(o.splitMB > 0 && parts.count > 1 ? parts[0] : out)
     }
 
     static let pctRegex = try! NSRegularExpression(pattern: #"(\d+)%"#)
@@ -615,6 +666,73 @@ enum Engine {
     }
 }
 
+// ---- 直接改压缩包：加文件、删文件、改名（7-Zip 先写临时包再换掉原包，中途失败原包不动）----
+enum Editor {
+    /// 改不了就返回原因；nil = 能改
+    static func blocker(_ arc: URL, listing: Listing, fixer: NameFixer) -> String? {
+        let t = listing.type.lowercased()
+        if !["zip", "7z", "tar", "wim"].contains(t) {
+            return L("\(listing.type) 格式只能看、不能改（能改的是 zip / 7z / tar）", "\(listing.type) can be viewed but not edited (zip / 7z / tar can)")
+        }
+        if Archive.volumes(arc).count > 1 { return L("分卷包只能看、不能改", "Split archives can't be edited") }
+        if fixer.charset != nil { return L("这个包的文件名是旧编码（\(fixer.charset!)），改了会乱码，只能看", "Names use a legacy encoding (\(fixer.charset!)); editing would garble them") }
+        if !FileManager.default.isWritableFile(atPath: arc.path) { return L("这个文件是只读的，不能改", "The file is read-only") }
+        return nil
+    }
+
+    /// 原包加了密码：新加进去的也用同一个密码、同一种加密
+    static func cryptArgs(_ listing: Listing, password: String?) -> [String] {
+        let t = listing.type.lowercased()
+        var a = t == "zip" ? ["-mcu=on"] : []
+        guard let pw = password, !pw.isEmpty, listing.anyEncrypted || listing.headerEncrypted else { return a }
+        a.append("-p" + pw)
+        if t == "zip", listing.entries.contains(where: { $0.method.contains("AES") }) { a.append("-mem=AES256") }
+        if t == "7z", listing.headerEncrypted { a.append("-mhe=on") }
+        return a
+    }
+
+    /// 把 files 加到包里的 dir 文件夹下（dir 为空 = 最外层）；同名的会被替换
+    static func add(_ files: [URL], into dir: String, arc: URL, listing: Listing, password: String?, runner: Runner) -> Swift.Result<Void, ZError> {
+        let fm = FileManager.default
+        let stage = fm.temporaryDirectory.appendingPathComponent("unpack-add-\(UUID().uuidString.prefix(8))")
+        defer { try? fm.removeItem(at: stage) }
+        let target = dir.isEmpty ? stage : stage.appendingPathComponent(dir)
+        var rel: [String] = []
+        do {
+            try fm.createDirectory(at: target, withIntermediateDirectories: true)
+            for f in files {
+                try fm.copyItem(at: f, to: target.appendingPathComponent(f.lastPathComponent))   // APFS 上是克隆，不占空间、很快
+                rel.append(dir.isEmpty ? f.lastPathComponent : dir + "/" + f.lastPathComponent)
+            }
+        } catch { return .failure(.failed(error.localizedDescription)) }
+        let args = ["a", "-bso0", "-bse2", "-sccUTF-8", "-xr!.DS_Store", "-xr!__MACOSX", "-xr!._*"]
+            + cryptArgs(listing, password: password) + [arc.path] + rel
+        return check(SevenZip.run(args, cwd: stage, runner: runner), runner)
+    }
+
+    static func delete(_ paths: [String], arc: URL, listing: Listing, password: String?, runner: Runner) -> Swift.Result<Void, ZError> {
+        // 名字表 + -spd：名字里有 * ? [ 也按原样认，不当通配符；删文件夹会连里面的一起删
+        let lf = FileManager.default.temporaryDirectory.appendingPathComponent("unpack-del-\(UUID().uuidString).txt")
+        defer { try? FileManager.default.removeItem(at: lf) }
+        do { try paths.joined(separator: "\n").write(to: lf, atomically: true, encoding: .utf8) }
+        catch { return .failure(.failed(error.localizedDescription)) }
+        let args = ["d", "-bso0", "-bse2", "-sccUTF-8", "-spd", "-scsUTF-8"] + cryptArgs(listing, password: password) + [arc.path, "@" + lf.path]
+        return check(SevenZip.run(args, runner: runner), runner)
+    }
+
+    /// 改名（文件夹改名，里面的东西跟着走）
+    static func rename(_ path: String, to newName: String, arc: URL, listing: Listing, password: String?, runner: Runner) -> Swift.Result<Void, ZError> {
+        let parent = (path as NSString).deletingLastPathComponent
+        let new = parent.isEmpty ? newName : parent + "/" + newName
+        let args = ["rn", "-bso0", "-bse2", "-sccUTF-8"] + cryptArgs(listing, password: password) + [arc.path, path, new]
+        return check(SevenZip.run(args, runner: runner), runner)
+    }
+
+    private static func check(_ r: SevenZip.Result, _ runner: Runner) -> Swift.Result<Void, ZError> {
+        r.code == 0 ? .success(()) : .failure(SevenZip.classify(r, runner: runner))
+    }
+}
+
 // ---- 一个任务（一个压缩包，或者一批要压缩的文件）----
 final class Job: ObservableObject, Identifiable {
     enum Kind { case extract, compress }
@@ -623,6 +741,7 @@ final class Job: ObservableObject, Identifiable {
     let kind: Kind
     let sources: [URL]
     let selection: [String]?   // 只解其中几项（从「查看内容」里勾的）
+    let options: CompressOptions   // 压缩任务用
     @Published var state = State.waiting
     @Published var fraction = 0.0
     @Published var detail = ""
@@ -632,8 +751,8 @@ final class Job: ObservableObject, Identifiable {
     var listing: Listing?
     private var runner = Runner()
 
-    init(kind: Kind, sources: [URL], selection: [String]? = nil, password: String? = nil) {
-        self.kind = kind; self.sources = sources; self.selection = selection; self.password = password
+    init(kind: Kind, sources: [URL], selection: [String]? = nil, password: String? = nil, options: CompressOptions = .fromPrefs()) {
+        self.kind = kind; self.sources = sources; self.selection = selection; self.password = password; self.options = options
     }
 
     var title: String {
@@ -641,6 +760,13 @@ final class Job: ObservableObject, Identifiable {
         case .extract: return sources[0].lastPathComponent + (selection.map { L("（选中 \($0.count) 项）", " (\($0.count) selected)") } ?? "")
         case .compress: return sources.count == 1 ? sources[0].lastPathComponent : L("\(sources.count) 个项目", "\(sources.count) items")
         }
+    }
+    /// 标题后面的灰字：→ zip、→ 7z · 加密 · 分卷
+    var compressTag: String {
+        var t = "→ " + options.format
+        if !options.password.isEmpty { t += L(" · 加密", " · encrypted") }
+        if options.splitMB > 0 { t += L(" · 分卷", " · split") }
+        return t
     }
     var volumeCount: Int { kind == .extract ? Archive.volumes(sources[0]).count : 0 }
 
@@ -654,7 +780,7 @@ final class Job: ObservableObject, Identifiable {
         switch kind {
         case .compress:
             ui { self.detail = L("准备压缩…", "Preparing…") }
-            finish(Engine.compress(sources, runner: runner, progress: report))
+            finish(Engine.compress(sources, options: options, runner: runner, progress: report))
         case .extract:
             let arc = sources[0]
             ui { self.detail = L("读取内容…", "Reading…") }
@@ -704,12 +830,26 @@ extension ZError {
     var isPassword: Bool { if case .needPassword = self { return true }; if case .wrongPassword = self { return true }; return false }
 }
 
+/// 打开「查看内容」窗口要的：哪个包、已知的密码
+struct BrowseTarget: Identifiable { let id = UUID(); let url: URL; var password: String? }
+/// 打开「压缩选项」窗口要的：要压哪些东西
+struct ComposeTarget: Identifiable { let id = UUID(); let urls: [URL] }
+
 // ---- 任务队列：一次只跑一个（7-Zip 自己会用满多核）----
 final class JobQueue: ObservableObject {
     static let shared = JobQueue()
     @Published var jobs: [Job] = []
+    @Published var browsing: BrowseTarget?
+    @Published var composing: ComposeTarget?
     private let work = DispatchQueue(label: "unpack.work", qos: .userInitiated)
     var openedByFinder = false
+
+    /// 按住 ⌥ 拖进来：压缩包先看内容（可以改），其他东西先设压缩选项
+    func addWithOptions(_ urls: [URL]) {
+        let archives = urls.filter(Archive.isArchive), loose = urls.filter { !Archive.isArchive($0) }
+        if let a = archives.first { browsing = BrowseTarget(url: Archive.firstVolume(a)) }
+        else if !loose.isEmpty { composing = ComposeTarget(urls: loose) }
+    }
 
     func add(_ urls: [URL]) {
         var loose: [URL] = []
@@ -759,7 +899,7 @@ final class JobQueue: ObservableObject {
 
     // 双击压缩包打开、而且全部顺利解完：自动退出（设置里打开才这样）
     private func maybeQuit() {
-        guard openedByFinder, Pref.on(Pref.quitAfter), !jobs.isEmpty, jobs.allSatisfy({ $0.state == .done }) else { return }
+        guard openedByFinder, browsing == nil, Pref.on(Pref.quitAfter), !jobs.isEmpty, jobs.allSatisfy({ $0.state == .done }) else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { NSApp.terminate(nil) }
     }
 
@@ -767,16 +907,18 @@ final class JobQueue: ObservableObject {
     func cancelAll() { jobs.forEach { $0.cancel() } }
 }
 
-// ---- 自动更新：每天最多问一次 GitHub 最新发布版；有新版就在状态栏提示，点一下下载、换掉自己、重新打开 ----
+// ---- 自动更新：每天最多问一次 GitHub 最新发布版；有新版就在后台下好、解开，退出时换掉自己，下次打开就是新版 ----
+// 状态栏会提示「已下好，退出后自动换上 · 现在更新」，点了立刻换、重新打开
 final class Updater: ObservableObject {
     static let shared = Updater()
-    enum State: Equatable { case idle, available(String), working, failed }
+    enum State: Equatable { case idle, available(String), downloading, ready(String), working, failed }
     @Published var state = State.idle
     static let api = URL(string: "https://api.github.com/repos/Hejun-Coderlife/mac-unpack/releases/latest")!
     static let page = URL(string: "https://github.com/Hejun-Coderlife/mac-unpack/releases/latest")!
     static let assetName = "Unpack-macOS.zip"
     let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
     private let d = UserDefaults.standard
+    private var staged: URL?   // 下好、解开的新版 .app（在临时目录里）
 
     /// "1.10" 比 "1.9" 新：按点分开逐段比数字
     static func newer(_ a: String, than b: String) -> Bool {
@@ -786,6 +928,12 @@ final class Updater: ObservableObject {
             if p != q { return p > q }
         }
         return false
+    }
+
+    /// 能不能换掉自己：装在没权限写的地方（或者从「下载」里直接打开、被系统挪到临时位置）就不行
+    private var canReplace: Bool {
+        let target = Bundle.main.bundleURL
+        return FileManager.default.isWritableFile(atPath: target.deletingLastPathComponent().path) && !target.path.contains("/AppTranslocation/")
     }
 
     func check() {
@@ -808,21 +956,18 @@ final class Updater: ObservableObject {
         }.resume()
     }
 
-    /// 上次查到的新版还没装：直接提示，不用再联网
+    /// 上次查到的新版还没装：能自己换就接着在后台下，换不了就只提示
     private func showPending() {
         guard state == .idle, let v = d.string(forKey: Pref.latestVersion), Self.newer(v, than: current) else { return }
-        state = .available(v)
+        if canReplace { download(v) } else { state = .available(v) }
     }
 
-    func install() {
-        guard let s = d.string(forKey: Pref.latestAsset), let url = URL(string: s) else { return }
-        let target = Bundle.main.bundleURL
-        // 装在没权限写的地方（或者从「下载」里直接打开、被系统挪到临时位置）：换不了自己，就打开下载页
-        guard FileManager.default.isWritableFile(atPath: target.deletingLastPathComponent().path),
-              !target.path.contains("/AppTranslocation/") else { NSWorkspace.shared.open(Self.page); return }
-        state = .working
+    /// 下载新版 zip、解到临时目录，确认里面是同一个程序
+    private func download(_ v: String, then: (() -> Void)? = nil) {
+        guard let s = d.string(forKey: Pref.latestAsset), let url = URL(string: s) else { state = .available(v); return }
+        state = .downloading
         URLSession.shared.downloadTask(with: url) { tmp, resp, _ in
-            guard let tmp, (resp as? HTTPURLResponse)?.statusCode == 200 else { ui { self.state = .failed }; return }
+            guard let tmp, (resp as? HTTPURLResponse)?.statusCode == 200 else { ui { self.state = .available(v) }; return }
             let fm = FileManager.default
             let dir = fm.temporaryDirectory.appendingPathComponent("unpack-update-" + UUID().uuidString)
             try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -832,24 +977,44 @@ final class Updater: ObservableObject {
             try? unzip.run(); unzip.waitUntilExit()
             guard unzip.terminationStatus == 0,
                   let app = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?.first(where: { $0.pathExtension == "app" }),
-                  Bundle(url: app)?.bundleIdentifier == Bundle.main.bundleIdentifier else { ui { self.state = .failed }; return }
-            // 等本程序退出 → 旧的挪开、新的换上（失败就把旧的放回去）→ 重新打开
-            let q = { (u: URL) in "'" + u.path.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-            let old = target.deletingLastPathComponent().appendingPathComponent(".unpack-old-\(UUID().uuidString).app")
-            let script = """
-            while kill -0 \(getpid()) 2>/dev/null; do sleep 0.2; done
-            if mv \(q(target)) \(q(old)); then
-              if mv \(q(app)) \(q(target)); then rm -rf \(q(old)); else mv \(q(old)) \(q(target)); fi
-            fi
-            rm -rf \(q(dir))
-            open \(q(target))
-            """
-            let sh = Process()
-            sh.executableURL = URL(fileURLWithPath: "/bin/sh")
-            sh.arguments = ["-c", script]
-            do { try sh.run() } catch { ui { self.state = .failed }; return }
-            ui { NSApp.terminate(nil) }
+                  Bundle(url: app)?.bundleIdentifier == Bundle.main.bundleIdentifier else { ui { self.state = .available(v) }; return }
+            ui { self.staged = app; self.state = .ready(v); then?() }
         }.resume()
+    }
+
+    /// 等本程序退出 → 旧的挪开、新的换上（失败就把旧的放回去）→ 要的话重新打开
+    private func swap(relaunch: Bool) -> Bool {
+        guard let app = staged else { return false }
+        staged = nil
+        let target = Bundle.main.bundleURL
+        let q = { (u: URL) in "'" + u.path.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+        let old = target.deletingLastPathComponent().appendingPathComponent(".unpack-old-\(UUID().uuidString).app")
+        let script = """
+        while kill -0 \(getpid()) 2>/dev/null; do sleep 0.2; done
+        if mv \(q(target)) \(q(old)); then
+          if mv \(q(app)) \(q(target)); then rm -rf \(q(old)); else mv \(q(old)) \(q(target)); fi
+        fi
+        rm -rf \(q(app.deletingLastPathComponent()))
+        \(relaunch ? "open " + q(target) : "")
+        """
+        let sh = Process()
+        sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+        sh.arguments = ["-c", script]
+        return (try? sh.run()) != nil
+    }
+
+    /// 点「现在更新」：没下好就先下，然后换上、重新打开
+    func install() {
+        guard canReplace else { NSWorkspace.shared.open(Self.page); return }
+        let go = { self.state = .working; if self.swap(relaunch: true) { NSApp.terminate(nil) } else { self.state = .failed } }
+        if staged != nil { go() }
+        else if let v = d.string(forKey: Pref.latestVersion) { download(v, then: go) }
+    }
+
+    /// 退出时调：有下好的新版就悄悄换上（不重新打开）
+    func installOnQuit() {
+        guard Pref.on(Pref.autoUpdate), case .ready = state else { return }
+        _ = swap(relaunch: false)
     }
 }
 
@@ -859,9 +1024,10 @@ struct UpdateLink: View {
     var body: some View {
         switch u.state {
         case .available(let v): LinkButton(title: L("有新版本 \(v) · 更新", "Update to \(v)")) { u.install() }
+        case .ready(let v): LinkButton(title: L("新版本 \(v) 已下好，退出后自动换上 · 现在更新", "\(v) installs when you quit · Update now")) { u.install() }
         case .working: Text(L("正在更新…", "Updating…")).foregroundStyle(Theme.faint)
         case .failed: LinkButton(title: L("更新失败，去下载", "Update failed — download"), color: Theme.error) { NSWorkspace.shared.open(Updater.page) }
-        case .idle: EmptyView()
+        case .idle, .downloading: EmptyView()
         }
     }
 }
@@ -870,20 +1036,40 @@ struct UpdateLink: View {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         JobQueue.shared.openedByFinder = true
+        // 设置里选了「双击先看内容」：只打开一个压缩包时先看，一次打开好几个还是直接解
+        if Pref.on(Pref.browseOnOpen), urls.count == 1, Archive.isArchive(urls[0]) {
+            JobQueue.shared.browsing = BrowseTarget(url: Archive.firstVolume(urls[0]))
+            return
+        }
         JobQueue.shared.add(urls)
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.servicesProvider = self
         NSUpdateDynamicServices()
         Updater.shared.check()
-        if ProcessInfo.processInfo.environment["UNPACK_UPDATE_NOW"] != nil, case .available = Updater.shared.state { Updater.shared.install() }   // 自测用
+        if ProcessInfo.processInfo.environment["UNPACK_UPDATE_NOW"] != nil { Updater.shared.install() }   // 自测用
+        // 自测截图用：UNPACK_SHOW=browse:压缩包 / compose:文件 直接打开对应窗口
+        if let s = ProcessInfo.processInfo.environment["UNPACK_SHOW"], let i = s.firstIndex(of: ":") {
+            let u = URL(fileURLWithPath: String(s[s.index(after: i)...]))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                if s.hasPrefix("browse") { JobQueue.shared.browsing = BrowseTarget(url: u) } else { JobQueue.shared.composing = ComposeTarget(urls: [u]) }
+            }
+        }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationWillTerminate(_ notification: Notification) {
         JobQueue.shared.cancelAll()
+        Updater.shared.installOnQuit()
         Thread.sleep(forTimeInterval: 0.3)
     }
     // 访达右键 → 服务 →「用解压处理」
+    // 访达右键 → 服务 →「用解压查看内容」
+    @objc func browseFiles(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        let urls = (pboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+        NSApp.activate(ignoringOtherApps: true)
+        if let a = urls.first(where: Archive.isArchive) { JobQueue.shared.browsing = BrowseTarget(url: Archive.firstVolume(a)) }
+        else { JobQueue.shared.add(urls) }
+    }
     @objc func unpackFiles(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
         let urls = (pboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
         NSApp.activate(ignoringOtherApps: true)
@@ -907,9 +1093,26 @@ struct UnpackApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button(L("打开…", "Open…")) { pickFiles() }.keyboardShortcut("o")
+                Button(L("查看压缩包内容…", "Browse Archive…")) {
+                    if let u = pick(L("选一个压缩包：先看里面有什么，可以加、删、改名", "Choose an archive to browse and edit"), dirs: false).first {
+                        JobQueue.shared.browsing = BrowseTarget(url: Archive.firstVolume(u))
+                    }
+                }.keyboardShortcut("o", modifiers: [.command, .shift])
+                Button(L("新建压缩包…", "New Archive…")) {
+                    let us = pick(L("选要压缩的文件或文件夹，下一步可选格式、密码、分卷", "Choose files or folders; next you can pick format, password and split"), dirs: true)
+                    if !us.isEmpty { JobQueue.shared.composing = ComposeTarget(urls: us) }
+                }.keyboardShortcut("n")
             }
         }
     }
+}
+
+func pick(_ message: String, dirs: Bool) -> [URL] {
+    let p = NSOpenPanel()
+    p.allowsMultipleSelection = dirs
+    p.canChooseDirectories = dirs
+    p.message = message
+    return p.runModal() == .OK ? p.urls : []
 }
 
 func pickFiles() {
@@ -928,12 +1131,37 @@ func selfTest(_ list: String) {
     for path in list.split(separator: ":") {
         let u = URL(fileURLWithPath: String(path))
         if !Archive.isArchive(u) {
-            let r = Engine.compress([u], runner: Runner()) { _ in }
+            // 压缩选项：UNPACK_FORMAT=7z UNPACK_LEVEL=9 UNPACK_PW=密码 UNPACK_SPLIT=分卷MB
+            var o = CompressOptions.fromPrefs()
+            if let f = env["UNPACK_FORMAT"] { o.format = f }
+            if let l = env["UNPACK_LEVEL"].flatMap(Int.init) { o.level = l }
+            if let p = env["UNPACK_PW"] { o.password = p }
+            if let s = env["UNPACK_SPLIT"].flatMap(Int.init) { o.splitMB = s }
+            let r = Engine.compress([u], options: o, runner: Runner()) { _ in }
             print("COMPRESS \(u.lastPathComponent) →", (try? r.get().path) ?? "\(r)")
             continue
         }
         let arc = Archive.firstVolume(u)
         let fixer = NameFixer(arc)
+        // 改包自测：UNPACK_EDIT="add 包里的文件夹 /本机/文件;rename 旧路径 新名字;delete 路径"（字段用 Tab 分开），改完列出内容
+        if let ops = env["UNPACK_EDIT"] {
+            for op in ops.split(separator: ";") {
+                guard case .success(let (l, pw)) = Engine.unlock(arc, given: env["UNPACK_PW"]) else { print("FAIL unlock"); break }
+                if let why = Editor.blocker(arc, listing: l, fixer: fixer) { print("BLOCKED \(why)"); break }
+                let f = op.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+                let r: Swift.Result<Void, ZError>
+                switch f[0] {
+                case "add": r = Editor.add(f.dropFirst(2).map { URL(fileURLWithPath: $0) }, into: f[1], arc: arc, listing: l, password: pw, runner: Runner())
+                case "rename": r = Editor.rename(f[1], to: f[2], arc: arc, listing: l, password: pw, runner: Runner())
+                default: r = Editor.delete(Array(f.dropFirst()), arc: arc, listing: l, password: pw, runner: Runner())
+                }
+                print("EDIT \(f[0]):", (try? r.get()) != nil ? "ok" : "\(r)")
+            }
+            if case .success(let (l, _)) = Engine.unlock(arc, given: env["UNPACK_PW"]) {
+                print("NOW enc=\(l.anyEncrypted) hdr=\(l.headerEncrypted)"); for e in l.entries { print("   ", e.path, e.method) }
+            }
+            continue
+        }
         switch Engine.unlock(arc, given: env["UNPACK_PW"]) {
         case .failure(let e): print("FAIL \(u.lastPathComponent): \(e.text)")
         case .success(let (l, pw)):
@@ -1006,7 +1234,6 @@ func para(_ md: String) -> Text {
 struct ContentView: View {
     @ObservedObject var queue = JobQueue.shared
     @State private var targeted = false
-    @State private var browsing: Job?
 
     var body: some View {
         ZStack {
@@ -1021,7 +1248,7 @@ struct ContentView: View {
                         do {
                             para(L("继续把压缩包拖进来，或者 [选择文件](unpack://open)。", "Drop more archives, or [choose files](unpack://open)."))
                                 .font(.system(size: 14)).foregroundStyle(Theme.secondary).padding(.bottom, 6)
-                            ForEach(queue.jobs) { JobRow(job: $0, browse: { browsing = $0 }) }
+                            ForEach(queue.jobs) { JobRow(job: $0, browse: { queue.browsing = BrowseTarget(url: $0.sources[0], password: $0.password) }) }
                         }
                     }
                     .frame(maxWidth: 600, alignment: .leading)
@@ -1040,11 +1267,15 @@ struct ContentView: View {
             return .systemAction
         })
         .dropDestination(for: URL.self) { urls, _ in
-            queue.add(urls); return !urls.isEmpty
+            if NSEvent.modifierFlags.contains(.option) { queue.addWithOptions(urls) } else { queue.add(urls) }
+            return !urls.isEmpty
         } isTargeted: { t in withAnimation(.easeOut(duration: 0.15)) { targeted = t } }
-        .sheet(item: $browsing) { BrowserView(job: $0) }
+        .sheet(item: $queue.browsing) { BrowserView(target: $0) }
+        .sheet(item: $queue.composing) { CompressSheet(target: $0) }
         .onChange(of: queue.jobs.count) { _, n in   // 自测截图用：UNPACK_BROWSE=1 时自动打开第一个包的内容
-            if n > 0, browsing == nil, ProcessInfo.processInfo.environment["UNPACK_BROWSE"] != nil { browsing = queue.jobs.first }
+            if n > 0, queue.browsing == nil, ProcessInfo.processInfo.environment["UNPACK_BROWSE"] != nil, let j = queue.jobs.first {
+                queue.browsing = BrowseTarget(url: j.sources[0], password: j.password)
+            }
         }
     }
 }
@@ -1080,6 +1311,8 @@ struct DropOverlay: View {
                 Text(L("松手即可", "Release to unpack")).font(.system(size: 26, weight: .bold)).foregroundStyle(Theme.heading)
                 Text(L("压缩包会被解开，文件夹会被压成 zip", "Archives are extracted, folders are zipped"))
                     .font(.system(size: 14)).foregroundStyle(Theme.secondary)
+                Text(L("按住 ⌥ 松手：压缩包先看内容、可以改；文件夹先选格式、密码、分卷", "Hold ⌥ when releasing: browse the archive, or choose format, password and split"))
+                    .font(.system(size: 12)).foregroundStyle(Theme.faint).padding(.top, 4)
             }
         }
         .allowsHitTesting(false)
@@ -1103,7 +1336,7 @@ struct JobRow: View {
                     Text(job.title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.heading)
                         .lineLimit(1).truncationMode(.middle)
                     if job.volumeCount > 1 { Text(L("\(job.volumeCount) 卷", "\(job.volumeCount) parts")).foregroundStyle(Theme.faint) }
-                    if job.kind == .compress { Text(L("→ zip", "→ zip")).foregroundStyle(Theme.faint) }
+                    if job.kind == .compress { Text(job.compressTag).foregroundStyle(Theme.faint) }
                     Spacer(minLength: 0)
                     if hover && job.state != .working {
                         LinkButton(title: L("移除", "Remove"), color: Theme.faint) { withAnimation { JobQueue.shared.remove(job) } }
@@ -1253,8 +1486,11 @@ struct SettingsView: View {
     @AppStorage(Pref.reveal) private var reveal = true
     @AppStorage(Pref.trashAfter) private var trashAfter = false
     @AppStorage(Pref.quitAfter) private var quitAfter = true
+    @AppStorage(Pref.browseOnOpen) private var browseOnOpen = false
     @AppStorage(Pref.rememberPw) private var rememberPw = true
     @AppStorage(Pref.autoUpdate) private var autoUpdate = true
+    @AppStorage(Pref.format) private var format = "zip"
+    @AppStorage(Pref.level) private var level = 5
     @State private var saved = Passwords.all().count
 
     var body: some View {
@@ -1265,8 +1501,17 @@ struct SettingsView: View {
             Toggle(L(".tar.gz / .tgz 一次解到底", "Unpack .tar.gz in one step"), isOn: $nestedTar)
             Toggle(L("解完在访达里选中", "Show in Finder when done"), isOn: $reveal)
             Toggle(L("解完把压缩包移到废纸篓（分卷一起）", "Move archive (all parts) to Trash when done"), isOn: $trashAfter)
+            Toggle(L("双击压缩包时先看内容，不直接解开", "Double-click an archive to browse it first"), isOn: $browseOnOpen)
             Toggle(L("双击压缩包打开时，解完自动退出", "Quit after extracting files opened from Finder"), isOn: $quitAfter)
-            Toggle(L("有新版本时提醒我（每天看一次）", "Tell me when a new version is out"), isOn: $autoUpdate)
+            Toggle(L("自动更新（有新版就在后台下好，退出时换上）", "Update automatically (downloads in the background, installs on quit)"), isOn: $autoUpdate)
+            Rule()
+            HStack(spacing: 8) {
+                Text(L("拖进来压缩成", "Compress to"))
+                FormatPicker(format: $format)
+                LevelPicker(level: $level)
+            }
+            Text(L("要设密码、分卷：按住 ⌥ 拖进来，或 ⌘N", "For password or split: hold ⌥ while dropping, or ⌘N"))
+                .font(.system(size: 12)).foregroundStyle(Theme.faint)
             Rule()
             Toggle(L("输对的密码记进密码本（存在钥匙串）", "Save correct passwords to Keychain"), isOn: $rememberPw)
             HStack {
@@ -1282,32 +1527,206 @@ struct SettingsView: View {
     }
 }
 
-// ---- 查看内容：搜索、勾选只解几个、空格键快速预览 ----
+// ---- 压缩选项：格式、压缩程度、密码、分卷 ----
+struct FormatPicker: View {
+    @Binding var format: String
+    var body: some View {
+        Picker("", selection: $format) { Text("zip").tag("zip"); Text("7z").tag("7z") }
+            .pickerStyle(.segmented).labelsHidden().fixedSize()
+    }
+}
+
+struct LevelPicker: View {
+    @Binding var level: Int
+    var body: some View {
+        Picker("", selection: $level) { ForEach(CompressOptions.levels, id: \.0) { Text($0.1).tag($0.0) } }
+            .labelsHidden().fixedSize()
+    }
+}
+
+struct CompressSheet: View {
+    let target: ComposeTarget
+    @Environment(\.dismiss) private var dismiss
+    @State private var o = CompressOptions.fromPrefs()
+    @State private var again = ""
+    @State private var total: Int64?
+    @AppStorage(Pref.rememberPw) private var rememberPw = true
+
+    var mismatch: Bool { !o.password.isEmpty && again != o.password }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(L("新建压缩包", "New Archive")).font(.system(size: 20, weight: .bold)).foregroundStyle(Theme.heading)
+                Text(target.urls.count == 1 ? target.urls[0].lastPathComponent : L("\(target.urls.count) 个项目", "\(target.urls.count) items"))
+                    .foregroundStyle(Theme.secondary).lineLimit(1).truncationMode(.middle)
+                if let total { Text(bytes(total)).foregroundStyle(Theme.faint) }
+            }
+            .padding(.bottom, 10)
+            Rule().padding(.bottom, 16)
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 14, verticalSpacing: 14) {
+                GridRow {
+                    label(L("名字", "Name"))
+                    underlined(HStack(spacing: 2) {
+                        TextField(CompressOptions.defaultName(target.urls), text: $o.name)
+                        Text("." + o.format).foregroundStyle(Theme.faint)
+                    })
+                    .frame(width: 240)
+                }
+                GridRow {
+                    label(L("格式", "Format"))
+                    VStack(alignment: .leading, spacing: 4) {
+                        FormatPicker(format: $o.format)
+                        hint(o.format == "zip" ? L("Windows、Mac 双击就能打开", "Opens anywhere with a double-click")
+                             : L("一般比 zip 小一些，对方要装解压软件（7-Zip、WinRAR、「解压」）", "Usually smaller; needs an app like 7-Zip to open"))
+                    }
+                }
+                GridRow { label(L("压缩", "Level")); LevelPicker(level: $o.level) }
+                GridRow {
+                    label(L("密码", "Password"))
+                    VStack(alignment: .leading, spacing: 8) {
+                        underlined(SecureField(L("不设就留空", "Leave empty for none"), text: $o.password)).frame(width: 240)
+                        if !o.password.isEmpty {
+                            underlined(SecureField(L("再输一次", "Repeat"), text: $again)).frame(width: 240)
+                            if mismatch && !again.isEmpty { Text(L("两次输的不一样", "Passwords don't match")).foregroundStyle(Theme.error) }
+                            if o.format == "7z" {
+                                Toggle(L("文件名也加密（不输密码看不到里面有什么）", "Encrypt file names too"), isOn: $o.encryptNames)
+                            } else {
+                                hint(L("AES-256 加密。Windows、Mac 自带的解压打不开，要用 7-Zip、WinRAR 或「解压」",
+                                       "AES-256. The built-in Windows/Mac tools can't open it; use 7-Zip, WinRAR or Unpack"))
+                            }
+                            Toggle(L("记进密码本，自己以后解开不用再输", "Save to my password book"), isOn: $rememberPw)
+                        }
+                    }
+                }
+                GridRow {
+                    label(L("分卷", "Split"))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Picker("", selection: $o.splitMB) { ForEach(CompressOptions.splits, id: \.0) { Text($0.1).tag($0.0) } }
+                            .labelsHidden().fixedSize()
+                        if o.splitMB > 0 { hint(L("出来的是 名字.\(o.format).001、.002…，对方要全部收齐放一起再解", "Produces .001, .002…; all parts are needed to extract")) }
+                    }
+                }
+            }
+            .toggleStyle(.checkbox)
+            Rule().padding(.top, 22)
+            HStack(spacing: 14) {
+                Spacer()
+                LinkButton(title: L("取消", "Cancel"), color: Theme.secondary) { dismiss() }.keyboardShortcut(.cancelAction)
+                LinkButton(title: L("压缩", "Compress")) {
+                    o.name = o.name.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "/", with: "-")
+                    if !o.password.isEmpty, rememberPw { Passwords.remember(o.password) }
+                    JobQueue.shared.add(Job(kind: .compress, sources: target.urls, options: o))
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(mismatch)
+            }
+            .padding(.top, 12)
+        }
+        .font(.system(size: 13))
+        .padding(.horizontal, 28).padding(.top, 24).padding(.bottom, 14)
+        .frame(width: 560, alignment: .topLeading)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(Theme.bg)
+        .foregroundStyle(Theme.text)
+        .task {
+            let us = target.urls
+            total = await Task.detached { us.reduce(Int64(0)) { $0 + Engine.sizeOf($1) } }.value
+        }
+    }
+
+    func label(_ s: String) -> some View { Text(s).foregroundStyle(Theme.secondary).gridColumnAlignment(.trailing) }
+    func hint(_ s: String) -> some View { Text(s).font(.system(size: 12)).foregroundStyle(Theme.faint).fixedSize(horizontal: false, vertical: true) }
+    func underlined(_ v: some View) -> some View {
+        VStack(spacing: 3) { v.textFieldStyle(.plain).font(.system(size: 14)); Rectangle().fill(Theme.quoteBar).frame(height: 1) }
+    }
+}
+
+// ---- 查看内容：像文件夹一样一层层点进去；搜索、勾选只解几个、空格键快速预览；zip / 7z / tar 还能直接加、删、改名 ----
 struct BrowserView: View {
-    @ObservedObject var job: Job
+    let target: BrowseTarget
     @Environment(\.dismiss) private var dismiss
     @State private var listing: Listing?
+    @State private var fixer: NameFixer?
     @State private var password: String?
     @State private var error: String?
+    @State private var needPw = false
+    @State private var wrongPw = false
+    @State private var pwInput = ""
+    @State private var blocker: String?           // 不能改的原因；nil = 能改
     @State private var query = ""
-    @State private var checked = Set<Int>()
-    @State private var selected = Set<Int>()
+    @State private var cwd = ""                   // 现在在包里哪个文件夹（7-Zip 的原始路径），"" = 最外层
+    @State private var checked = Set<String>()
+    @State private var selected = Set<String>()
     @State private var preview: URL?
-    private var fixer: NameFixer { NameFixer(job.sources[0]) }
+    @State private var busy: String?              // 正在改包
+    @State private var editError: String?
+    @State private var renaming: Node?
+    @State private var newName = ""
+    @State private var deleting: [Node] = []
+    @State private var replacing: (files: [URL], count: Int)?
+    @State private var dropping = false
+    private var arc: URL { target.url }
 
-    struct Row: Identifiable { let id: Int; let name: String; let size: Int64; let isDir: Bool; let entry: Entry }
+    /// 列表里的一行：真实的文件/文件夹，或者只是从路径里看出来的文件夹（包里没单独记它）
+    struct Node: Identifiable, Hashable {
+        let id: String         // 7-Zip 的原始路径
+        let name: String       // 显示的名字（乱码已修）
+        let isDir: Bool
+        let size: Int64
+        let encrypted: Bool
+    }
 
-    var rows: [Row] {
-        guard let listing else { return [] }
-        let f = fixer
-        return listing.entries.map { Row(id: $0.id, name: f.display($0, total: listing.entries.count), size: $0.size, isDir: $0.isDir, entry: $0) }
-            .filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
+    var nodes: [Node] {
+        guard let listing, let fixer else { return [] }
+        let total = listing.entries.count
+        func disp(_ e: Entry) -> [String] {
+            let raw = e.path.split(separator: "/").map(String.init), d = fixer.display(e, total: total).split(separator: "/").map(String.init)
+            return d.count == raw.count ? d : raw
+        }
+        if !query.isEmpty {   // 搜索：整个包里找，显示完整路径
+            return listing.entries.compactMap { e in
+                let n = disp(e).joined(separator: "/")
+                return n.localizedCaseInsensitiveContains(query) ? Node(id: e.path, name: n, isDir: e.isDir, size: e.isDir ? 0 : e.size, encrypted: e.encrypted) : nil
+            }
+        }
+        let prefix = cwd.isEmpty ? "" : cwd + "/", depth = cwd.isEmpty ? 0 : cwd.split(separator: "/").count
+        var dirs: [String: (name: String, size: Int64)] = [:], files: [Node] = []
+        for e in listing.entries where e.path.hasPrefix(prefix) {
+            let raw = e.path.split(separator: "/").map(String.init)
+            guard raw.count > depth else { continue }
+            let d = disp(e)
+            if raw.count == depth + 1, !e.isDir {
+                files.append(Node(id: e.path, name: d[depth], isDir: false, size: e.size, encrypted: e.encrypted))
+                continue
+            }
+            let key = raw[0...depth].joined(separator: "/")
+            var v = dirs[key] ?? (d[depth], 0)
+            if !e.isDir { v.size += e.size }
+            dirs[key] = v
+        }
+        let order: (Node, Node) -> Bool = { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return dirs.map { Node(id: $0.key, name: $0.value.name, isDir: true, size: $0.value.size, encrypted: false) }.sorted(by: order)
+            + files.sorted(by: order)
+    }
+
+    /// 面包屑：包名 › 文件夹 › 子文件夹
+    var crumbs: [(path: String, name: String)] {
+        var out = [(path: "", name: arc.lastPathComponent)], acc = ""
+        guard let listing, let fixer, !cwd.isEmpty else { return out }
+        let probe = listing.entries.first { $0.path == cwd || $0.path.hasPrefix(cwd + "/") }
+        let raw = cwd.split(separator: "/").map(String.init)
+        var d = probe.map { fixer.display($0, total: listing.entries.count).split(separator: "/").map(String.init) } ?? raw
+        if d.count < raw.count { d = raw }
+        for (i, c) in raw.enumerated() { acc = acc.isEmpty ? c : acc + "/" + c; out.append((acc, d[i])) }
+        return out
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(job.sources[0].lastPathComponent).font(.system(size: 20, weight: .bold)).foregroundStyle(Theme.heading)
+                Text(arc.lastPathComponent).font(.system(size: 20, weight: .bold)).foregroundStyle(Theme.heading)
                     .lineLimit(1).truncationMode(.middle)
                 if let t = listing?.type, !t.isEmpty { Text(t).font(.system(size: 12)).foregroundStyle(Theme.faint) }
                 Spacer()
@@ -1322,8 +1741,11 @@ struct BrowserView: View {
             }
             .padding(.horizontal, 28).padding(.top, 24).padding(.bottom, 10)
             Rule().padding(.horizontal, 28)
+            if listing != nil { toolbar.padding(.horizontal, 28).padding(.vertical, 8) }
             Group {
-                if let error {
+                if needPw {
+                    passwordPrompt
+                } else if let error {
                     Text(error).font(.system(size: 15)).foregroundStyle(Theme.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if listing == nil {
@@ -1331,90 +1753,257 @@ struct BrowserView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     table
+                        .overlay {
+                            if dropping {
+                                RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.link.opacity(0.6), lineWidth: 2).padding(.horizontal, 16)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                        .dropDestination(for: URL.self) { urls, _ in
+                            guard blocker == nil, busy == nil, !urls.isEmpty else { return false }
+                            add(urls); return true
+                        } isTargeted: { dropping = $0 && blocker == nil }
                 }
             }
             .frame(maxHeight: .infinity)
             Rule()
-            HStack(spacing: 14) {
-                if let listing {
-                    Text(L("\(listing.entries.filter { !$0.isDir }.count) 个文件，解开共 \(bytes(listing.totalSize))；双击或空格键预览",
-                           "\(listing.entries.filter { !$0.isDir }.count) files, \(bytes(listing.totalSize)); double-click or Space to preview"))
-                        .foregroundStyle(Theme.secondary)
-                }
-                Spacer()
-                LinkButton(title: L("关闭", "Close"), color: Theme.secondary) { dismiss() }.keyboardShortcut(.cancelAction)
-                LinkButton(title: checkedFiles.isEmpty ? L("勾选后可只解这几项", "Check items to extract")
-                           : L("解压勾选的 \(checkedFiles.count) 项", "Extract \(checkedFiles.count) checked")) {
-                    JobQueue.shared.add(Job(kind: .extract, sources: job.sources, selection: checkedFiles, password: password))
-                    dismiss()
-                }
-                .disabled(checkedFiles.isEmpty)
-            }
-            .font(.system(size: 13))
-            .padding(.horizontal, 28).frame(height: 44)
+            footer
         }
-        .frame(width: 660, height: 500)
+        .frame(width: 720, height: 540)
         .background(Theme.bg)
         .foregroundStyle(Theme.text)
         .quickLookPreview($preview)
         .task { await load() }
+        .alert(L("改名", "Rename"), isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } }), presenting: renaming) { n in
+            TextField(L("新名字", "New name"), text: $newName)
+            Button(L("改名", "Rename")) { rename(n) }
+            Button(L("取消", "Cancel"), role: .cancel) {}
+        }
+        .confirmationDialog(deleting.count == 1 ? L("从压缩包里删掉「\(deleting[0].name)」？", "Delete “\(deleting[0].name)” from the archive?")
+                            : L("从压缩包里删掉这 \(deleting.count) 项？", "Delete \(deleting.count) items from the archive?"),
+                            isPresented: Binding(get: { !deleting.isEmpty }, set: { if !$0 { deleting = [] } })) {
+            Button(L("删除", "Delete"), role: .destructive) { delete(deleting) }
+            Button(L("取消", "Cancel"), role: .cancel) {}
+        } message: { Text(L("直接改原压缩包，删了找不回来（废纸篓里也没有）。", "This changes the archive itself and can't be undone.")) }
+        .confirmationDialog(L("这里已经有 \(replacing?.count ?? 0) 个同名的，替换掉？", "Replace \(replacing?.count ?? 0) items with the same name?"),
+                            isPresented: Binding(get: { replacing != nil }, set: { if !$0 { replacing = nil } })) {
+            Button(L("替换", "Replace"), role: .destructive) { if let r = replacing { add(r.files, force: true) } }
+            Button(L("取消", "Cancel"), role: .cancel) {}
+        }
+    }
+
+    /// 面包屑 + 改包的操作
+    var toolbar: some View {
+        HStack(spacing: 6) {
+            ForEach(Array(crumbs.enumerated()), id: \.offset) { i, c in
+                if i > 0 { Text("›").foregroundStyle(Theme.faint) }
+                if c.path == cwd && query.isEmpty { Text(c.name).foregroundStyle(Theme.heading).lineLimit(1) }
+                else { LinkButton(title: c.name) { query = ""; cwd = c.path; selected = [] }.lineLimit(1) }
+            }
+            Spacer(minLength: 12)
+            if let blocker {
+                Text(blocker).foregroundStyle(Theme.faint).lineLimit(1).truncationMode(.tail)
+            } else {
+                LinkButton(title: L("添加文件…", "Add Files…")) {
+                    let p = NSOpenPanel()
+                    p.allowsMultipleSelection = true; p.canChooseDirectories = true
+                    p.message = L("加到压缩包的「\(crumbs.last!.name)」里", "Add to “\(crumbs.last!.name)” in the archive")
+                    if p.runModal() == .OK { add(p.urls) }
+                }
+                .disabled(busy != nil).fixedSize()
+            }
+        }
+        .font(.system(size: 13))
+    }
+
+    var passwordPrompt: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(wrongPw ? L("密码不对，再试一次。", "Wrong password, try again.") : L("这个包加了密码，存过的密码都不对。", "This archive is encrypted and no saved password fits."))
+                .foregroundStyle(wrongPw ? Theme.error : Theme.secondary)
+            HStack(spacing: 12) {
+                VStack(spacing: 3) {
+                    SecureField(L("输入密码", "Password"), text: $pwInput).textFieldStyle(.plain).font(.system(size: 14)).onSubmit(unlock)
+                    Rectangle().fill(Theme.quoteBar).frame(height: 1)
+                }
+                .frame(width: 220)
+                LinkButton(title: L("打开", "Open"), action: unlock).disabled(pwInput.isEmpty)
+            }
+        }
+        .font(.system(size: 14))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    var footer: some View {
+        HStack(spacing: 14) {
+            if let busy {
+                ProgressView().controlSize(.small)
+                Text(busy).foregroundStyle(Theme.secondary)
+            } else if let editError {
+                Text(editError).foregroundStyle(Theme.error).lineLimit(2)
+            } else if let listing {
+                Text(L("\(listing.entries.filter { !$0.isDir }.count) 个文件，解开共 \(bytes(listing.totalSize))；双击进文件夹或预览",
+                       "\(listing.entries.filter { !$0.isDir }.count) files, \(bytes(listing.totalSize)); double-click to open"))
+                    .foregroundStyle(Theme.secondary)
+            }
+            Spacer()
+            LinkButton(title: L("关闭", "Close"), color: Theme.secondary) { dismiss() }.keyboardShortcut(.cancelAction)
+            if blocker == nil, !checked.isEmpty {
+                LinkButton(title: L("删除勾选的", "Delete checked"), color: Theme.error) { deleting = checkedNodes }.disabled(busy != nil)
+            }
+            LinkButton(title: checked.isEmpty ? L("全部解开", "Extract all") : L("解压勾选的 \(checkedFiles.count) 项", "Extract \(checkedFiles.count) checked")) {
+                JobQueue.shared.add(Job(kind: .extract, sources: [arc], selection: checked.isEmpty ? nil : checkedFiles, password: password))
+                dismiss()
+            }
+            .disabled(listing == nil || busy != nil || (!checked.isEmpty && checkedFiles.isEmpty))
+        }
+        .font(.system(size: 13))
+        .padding(.horizontal, 28).frame(height: 44)
     }
 
     /// 勾了文件夹就连同它里面的全部文件
     var checkedFiles: [String] {
         guard let listing else { return [] }
-        let dirs = listing.entries.filter { checked.contains($0.id) && $0.isDir }.map { $0.path + "/" }
-        return listing.entries.filter { e in !e.isDir && (checked.contains(e.id) || dirs.contains { e.path.hasPrefix($0) }) }.map(\.path)
+        let dirs = checked.map { $0 + "/" }
+        return listing.entries.filter { e in !e.isDir && (checked.contains(e.path) || dirs.contains { e.path.hasPrefix($0) }) }.map(\.path)
+    }
+    /// 勾了的（可能在别的文件夹里），删除时用
+    var checkedNodes: [Node] {
+        let here = Dictionary(nodes.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        return checked.sorted().map { here[$0] ?? Node(id: $0, name: ($0 as NSString).lastPathComponent, isDir: false, size: 0, encrypted: false) }
     }
 
     var table: some View {
-        Table(rows, selection: $selected) {
-            TableColumn("") { r in
-                Toggle("", isOn: Binding(get: { checked.contains(r.id) },
-                                         set: { if $0 { checked.insert(r.id) } else { checked.remove(r.id) } }))
+        Table(nodes, selection: $selected) {
+            TableColumn("") { n in
+                Toggle("", isOn: Binding(get: { checked.contains(n.id) },
+                                         set: { if $0 { checked.insert(n.id) } else { checked.remove(n.id) } }))
                     .labelsHidden().toggleStyle(.checkbox)
             }
             .width(22)
-            TableColumn(L("名称", "Name")) { r in
+            TableColumn(L("名称", "Name")) { n in
                 HStack(spacing: 7) {
-                    Image(systemName: r.isDir ? "folder" : (r.entry.encrypted ? "lock" : "doc"))
-                        .foregroundStyle(r.isDir ? Theme.link : Theme.faint).frame(width: 16)
-                    Text(r.name).lineLimit(1).truncationMode(.head)
+                    Image(systemName: n.isDir ? "folder" : (n.encrypted ? "lock" : "doc"))
+                        .foregroundStyle(n.isDir ? Theme.link : Theme.faint).frame(width: 16)
+                    Text(n.name).lineLimit(1).truncationMode(query.isEmpty ? .middle : .head)
                 }
             }
-            TableColumn(L("大小", "Size")) { r in Text(r.isDir ? "" : bytes(r.size)).monospacedDigit().foregroundStyle(Theme.secondary) }
+            TableColumn(L("大小", "Size")) { n in Text(n.isDir && n.size == 0 ? "" : bytes(n.size)).monospacedDigit().foregroundStyle(Theme.secondary) }
                 .width(90)
         }
         .tableStyle(.inset(alternatesRowBackgrounds: false))
         .scrollContentBackground(.hidden)
         .font(.system(size: 13))
         .padding(.horizontal, 16)
-        .contextMenu(forSelectionType: Int.self) { ids in
-            Button(L("快速预览", "Quick Look")) { if let id = ids.first { quickLook(id) } }
-        } primaryAction: { ids in if let id = ids.first { quickLook(id) } }
+        .contextMenu(forSelectionType: String.self) { ids in
+            let picked = nodes.filter { ids.contains($0.id) }
+            if picked.count == 1, let n = picked.first {
+                Button(n.isDir ? L("打开", "Open") : L("快速预览", "Quick Look")) { open(n) }
+            }
+            if !picked.isEmpty {
+                Button(L("解压这 \(picked.count) 项", "Extract \(picked.count) items")) {
+                    let keep = checked; checked = Set(picked.map(\.id))
+                    let files = checkedFiles; checked = keep
+                    JobQueue.shared.add(Job(kind: .extract, sources: [arc], selection: files, password: password))
+                }
+            }
+            if blocker == nil, busy == nil, !picked.isEmpty {
+                Divider()
+                if picked.count == 1, let n = picked.first {
+                    Button(L("改名…", "Rename…")) { newName = n.name.components(separatedBy: "/").last ?? n.name; renaming = n }
+                }
+                Button(L("删除…", "Delete…")) { deleting = picked }
+            }
+        } primaryAction: { ids in if let n = nodes.first(where: { ids.contains($0.id) }) { open(n) } }
         .onKeyPress(.space) {
-            if let id = selected.first { quickLook(id) }
+            if let n = nodes.first(where: { selected.contains($0.id) && !$0.isDir }) { quickLook(n.id) }
+            return .handled
+        }
+        .onKeyPress(.delete) {
+            let picked = nodes.filter { selected.contains($0.id) }
+            if blocker == nil, busy == nil, !picked.isEmpty { deleting = picked }
             return .handled
         }
     }
 
-    func load() async {
-        let arc = job.sources[0], given = job.password
-        let r = await Task.detached { Engine.unlock(arc, given: given) }.value
+    func open(_ n: Node) {
+        if n.isDir { query = ""; cwd = n.id; selected = [] } else { quickLook(n.id) }
+    }
+
+    func load(_ given: String? = nil) async {
+        let arc = arc, g = given ?? password ?? target.password
+        let (r, f) = await Task.detached { (Engine.unlock(arc, given: g), NameFixer(arc)) }.value
+        fixer = f
         switch r {
-        case .success(let (l, pw)): listing = l; password = pw
+        case .success(let (l, pw)):
+            listing = l; password = pw; needPw = false; error = nil
+            blocker = Editor.blocker(arc, listing: l, fixer: f)
+            // 原来所在的文件夹被删掉、改名了：退回最外层
+            if !cwd.isEmpty, !l.entries.contains(where: { $0.path == cwd || $0.path.hasPrefix(cwd + "/") }) { cwd = "" }
+            checked = checked.filter { k in l.entries.contains { $0.path == k || $0.path.hasPrefix(k + "/") } }
+        case .failure(let e) where e.isPassword:
+            needPw = true; wrongPw = given != nil
         case .failure(let e):
-            error = e.isPassword ? L("文件名也加密了，先在列表里输入密码。", "Filenames are encrypted — enter the password first.") : e.text
+            error = e.text
         }
     }
 
+    func unlock() {
+        guard !pwInput.isEmpty else { return }
+        let p = pwInput
+        pwInput = ""
+        Task {
+            await load(p)
+            if !needPw, Pref.on(Pref.rememberPw) { Passwords.remember(p) }
+        }
+    }
+
+    /// 在后台改包，改完重新读一遍内容
+    func edit(_ label: String, _ op: @escaping (Listing, String?) -> Swift.Result<Void, ZError>) {
+        guard let listing, busy == nil else { return }
+        busy = label; editError = nil
+        let pw = password
+        Task {
+            let r = await Task.detached { op(listing, pw) }.value
+            if case .failure(let e) = r { editError = e.text }
+            await load()
+            busy = nil
+        }
+    }
+
+    func add(_ urls: [URL], force: Bool = false) {
+        let here = Set(nodes.map { ($0.id as NSString).lastPathComponent })
+        let clash = query.isEmpty ? urls.filter { here.contains($0.lastPathComponent) }.count : 0
+        if clash > 0, !force { replacing = (urls, clash); return }
+        let arc = arc, dir = query.isEmpty ? cwd : ""
+        edit(L("正在加进压缩包…", "Adding…")) { l, pw in Editor.add(urls, into: dir, arc: arc, listing: l, password: pw, runner: Runner()) }
+    }
+
+    func delete(_ ns: [Node]) {
+        let arc = arc, paths = ns.map(\.id)
+        edit(L("正在删除…", "Deleting…")) { l, pw in Editor.delete(paths, arc: arc, listing: l, password: pw, runner: Runner()) }
+        checked.subtract(paths); selected = []
+    }
+
+    func rename(_ n: Node) {
+        let name = newName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, !name.contains("/"), name != (n.id as NSString).lastPathComponent else { return }
+        let parent = (n.id as NSString).deletingLastPathComponent
+        let dest = parent.isEmpty ? name : parent + "/" + name
+        if listing?.entries.contains(where: { $0.path == dest || $0.path.hasPrefix(dest + "/") }) == true {
+            editError = L("这里已经有叫「\(name)」的了", "“\(name)” already exists here"); return
+        }
+        let arc = arc
+        edit(L("正在改名…", "Renaming…")) { l, pw in Editor.rename(n.id, to: name, arc: arc, listing: l, password: pw, runner: Runner()) }
+        checked.remove(n.id); selected = []
+    }
+
     /// 把这一项单独解到临时目录，用系统的快速预览打开（RAR 7-Zip 解不了，换 unar）
-    func quickLook(_ id: Int) {
-        guard let e = listing?.entries.first(where: { $0.id == id }), !e.isDir else { return }
-        let arc = job.sources[0], pw = password ?? "", good = (fixer.display(e, total: listing?.entries.count ?? 0) as NSString).lastPathComponent
+    func quickLook(_ path: String) {
+        guard let listing, let e = listing.entries.first(where: { $0.path == path }), !e.isDir else { return }
+        let arc = arc, pw = password ?? "", good = ((fixer?.display(e, total: listing.entries.count) ?? e.path) as NSString).lastPathComponent
         Task.detached {
             let fm = FileManager.default
-            let dir = fm.temporaryDirectory.appendingPathComponent("unpack-preview-\(id)-\(UUID().uuidString.prefix(6))")
+            let dir = fm.temporaryDirectory.appendingPathComponent("unpack-preview-\(e.id)-\(UUID().uuidString.prefix(6))")
             _ = SevenZip.run(["e", "-y", "-spd", "-sccUTF-8", "-p" + pw, "-o" + dir.path, arc.path, e.path])
             func files() -> [URL] {
                 guard let en = fm.enumerator(at: dir, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }

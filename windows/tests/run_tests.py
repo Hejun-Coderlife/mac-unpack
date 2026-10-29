@@ -48,13 +48,14 @@ def legacy_zip(path, files, encoding):
     open(path, "wb").write(data)
 
 
-def run(case, items, dest, pw=None, save=None, expect_ok=True):
+def run(case, items, dest, pw=None, save=None, expect_ok=True, extra=None):
     os.makedirs(dest, exist_ok=True)
     log = os.path.join(WORK, case + ".log")
     env = {k: v for k, v in os.environ.items() if not k.startswith("UNPACK_")}
     env.update(UNPACK_TEST=";".join(items), UNPACK_DEST=dest, UNPACK_LOG=log)
     if pw is not None: env["UNPACK_PW"] = pw
     if save is not None: env["UNPACK_SAVE"] = save
+    env.update(extra or {})
     r = subprocess.run([EXE], env=env, timeout=300)
     out = open(log, encoding="utf-8").read() if os.path.exists(log) else "(no log)"
     print(f"--- {case} (exit {r.returncode})\n{out}")
@@ -136,6 +137,39 @@ else:
     names = zipfile.ZipFile(zp).namelist()
     if "src/子目录/中文.txt" not in names: failures.append(f"compress: names wrong {names}")
     run("compress-roundtrip", [zp], D("roundtrip")); check_tree("compress-roundtrip", os.path.join(D("roundtrip"), "src"), TREE)
+
+# 压缩选项：7z + 密码 + 加密文件名 + 分卷，再解回来对一遍
+big = os.path.join(FIX, "optsrc"); write_tree(big, TREE)
+with open(os.path.join(big, "big.bin"), "wb") as f: f.write(os.urandom(3_000_000))
+run("compress-7z-split", [big], D("opts"), pw="abc", extra={"UNPACK_FORMAT": "7z", "UNPACK_LEVEL": "9", "UNPACK_SPLIT": "1"})
+vols = sorted(n for n in os.listdir(D("opts")) if n.startswith("optsrc.7z."))
+if len(vols) < 3: failures.append(f"compress-7z-split: expected 3+ volumes, got {vols}")
+else:
+    r = subprocess.run([SZ, "l", "-p", os.path.join(D("opts"), vols[0])], stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode == 0: failures.append("compress-7z-split: names readable without password (-mhe not on)")
+    run("compress-7z-split-roundtrip", [os.path.join(D("opts"), vols[1])], D("optsback"), pw="abc")
+    check_tree("compress-7z-split-roundtrip", os.path.join(D("optsback"), "optsrc"), TREE)
+run("compress-zip-aes-store", [os.path.join(FIX, "src")], D("aes"), pw="xyz", extra={"UNPACK_LEVEL": "0", "UNPACK_SPLIT": "100"})
+r = subprocess.run([SZ, "l", "-slt", "-pxyz", os.path.join(D("aes"), "src.zip")], capture_output=True, text=True, encoding="utf-8", errors="replace")
+if "AES-256 Store" not in r.stdout: failures.append("compress-zip-aes-store: not AES-256 Store / not a single src.zip")
+
+# 改包：zip 里加到子文件夹、改文件夹名、删文件；加密 7z 改完文件名还是加密的；加密 zip 新加的也是 AES；分卷包不让改
+TAB = "\t"
+new = os.path.join(FIX, "新加.txt"); open(new, "w", encoding="utf-8").write("new\n")
+ez = os.path.join(FIX, "edit.zip"); sz("a", "-tzip", "-mcu=on", ez, "src")
+out = run("edit-zip", [ez], D("edit"), extra={"UNPACK_EDIT": f"add{TAB}src\\子目录{TAB}{new};rename{TAB}src\\子目录{TAB}改过的;delete{TAB}src\\hello.txt"})
+names = zipfile.ZipFile(ez).namelist()
+for want in ["src/改过的/新加.txt", "src/改过的/中文.txt"]:
+    if want not in names: failures.append(f"edit-zip: missing {want} in {names}")
+if "src/hello.txt" in names: failures.append("edit-zip: hello.txt not deleted")
+e7 = os.path.join(FIX, "edit.7z"); sz("a", "-pabc", "-mhe=on", e7, "src")
+out = run("edit-7z-hdr", [e7], D("edit"), pw="abc", extra={"UNPACK_EDIT": f"add{TAB}{TAB}{new}"})
+if "hdr=True" not in out or "新加.txt" not in out: failures.append("edit-7z-hdr: header encryption lost or file not added")
+ea = os.path.join(FIX, "edit-aes.zip"); sz("a", "-tzip", "-pxyz", "-mem=AES256", ea, "src")
+out = run("edit-zip-aes", [ea], D("edit"), pw="xyz", extra={"UNPACK_EDIT": f"add{TAB}{TAB}{new}"})
+if not any("新加.txt" in l and "AES" in l for l in out.splitlines()): failures.append("edit-zip-aes: added file not AES")
+out = run("edit-split-blocked", [F("split.7z.001")], D("edit"), extra={"UNPACK_EDIT": f"delete{TAB}x"})
+if "BLOCKED" not in out: failures.append("edit-split-blocked: split archive was not blocked")
 
 # RAR：机器上有 WinRAR 的 Rar.exe 才测（官方 7-Zip 自带 RAR 解码）
 rar = r"C:\Program Files\WinRAR\Rar.exe"

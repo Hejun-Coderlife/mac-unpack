@@ -116,12 +116,14 @@ class DropOverlay : Control
         using (var path = Rounded(new RectangleF(14, 14, Width - 28, Height - 28), 10)) g.DrawPath(pen, path);
         var t1 = L("松手即可", "Release to unpack");
         var t2 = L("压缩包会被解开，文件夹会被压成 zip", "Archives are extracted, folders are zipped");
-        var f1 = Theme.F(20, true); var f2 = Theme.F(11);
-        var s1 = g.MeasureString(t1, f1); var s2 = g.MeasureString(t2, f2);
-        float y = (Height - s1.Height - s2.Height - 8) / 2;
-        using var b1 = new SolidBrush(Theme.Heading); using var b2 = new SolidBrush(Theme.Secondary);
+        var t3 = L("按住 Alt 松手：压缩包先看内容、可以改；文件夹先选格式、密码、分卷", "Hold Alt when releasing: browse the archive, or choose format, password and split");
+        var f1 = Theme.F(20, true); var f2 = Theme.F(11); var f3 = Theme.F(9);
+        var s1 = g.MeasureString(t1, f1); var s2 = g.MeasureString(t2, f2); var s3 = g.MeasureString(t3, f3);
+        float y = (Height - s1.Height - s2.Height - s3.Height - 14) / 2;
+        using var b1 = new SolidBrush(Theme.Heading); using var b2 = new SolidBrush(Theme.Secondary); using var b3 = new SolidBrush(Theme.Faint);
         g.DrawString(t1, f1, b1, (Width - s1.Width) / 2, y);
         g.DrawString(t2, f2, b2, (Width - s2.Width) / 2, y + s1.Height + 8);
+        g.DrawString(t3, f3, b3, (Width - s3.Width) / 2, y + s1.Height + s2.Height + 14);
     }
     static GraphicsPath Rounded(RectangleF r, float rad)
     {
@@ -168,13 +170,21 @@ class MainForm : Form
         overlay.DragDrop += (_, e) =>
         {
             overlay.Visible = false;
-            if (e.Data!.GetData(DataFormats.FileDrop) is string[] files) { Activate(); JobQueue.Shared.Add(files); }
+            if (e.Data!.GetData(DataFormats.FileDrop) is not string[] files) return;
+            Activate();
+            // 按住 Alt 松手（KeyState 第 32 位）：压缩包先看内容，其他东西先设压缩选项
+            if ((e.KeyState & 32) != 0) BeginInvoke(() => OpenWithOptions(files)); else JobQueue.Shared.Add(files);
         };
 
         page.Resize += (_, _) => Relayout();
         JobQueue.Shared.ListChanged += Rebuild;
         JobQueue.Shared.AllDone += () => { var t = new System.Windows.Forms.Timer { Interval = 1200 }; t.Tick += (_, _) => Close(); t.Start(); };
-        KeyDown += (_, e) => { if (e.Control && e.KeyCode == Keys.O) { PickFiles(); e.Handled = true; } };
+        KeyDown += (_, e) =>
+        {
+            if (e.Control && e.Shift && e.KeyCode == Keys.O) { PickBrowse(); e.Handled = true; }
+            else if (e.Control && e.KeyCode == Keys.O) { PickFiles(); e.Handled = true; }
+            else if (e.Control && e.KeyCode == Keys.N) { PickCompose(); e.Handled = true; }
+        };
         FormClosing += (_, _) => JobQueue.Shared.CancelAll();
         Updater.Changed += UpdateChrome;
         Shown += (_, _) => Updater.Check();
@@ -209,6 +219,41 @@ class MainForm : Form
             Multiselect = true, Title = L("选压缩包解开；选普通文件则压成 zip", "Choose archives to extract, or files to zip"),
         };
         if (d.ShowDialog(this) == DialogResult.OK) JobQueue.Shared.Add(d.FileNames);
+    }
+
+    /// Ctrl+Shift+O：选一个压缩包，先看里面有什么（可以加、删、改名）
+    public void PickBrowse()
+    {
+        using var d = new OpenFileDialog { Title = L("选一个压缩包：先看里面有什么，可以加、删、改名", "Choose an archive to browse and edit") };
+        if (d.ShowDialog(this) == DialogResult.OK) Browse(Archive.FirstVolume(d.FileName));
+    }
+
+    /// Ctrl+N：选要压缩的文件，下一步选格式、密码、分卷（要压整个文件夹就把文件夹拖进来时按住 Alt）
+    public void PickCompose()
+    {
+        using var d = new OpenFileDialog { Multiselect = true, Title = L("选要压缩的文件，下一步可选格式、密码、分卷", "Choose files; next you can pick format, password and split") };
+        if (d.ShowDialog(this) == DialogResult.OK) Compose(d.FileNames.ToList());
+    }
+
+    public void OpenWithOptions(IEnumerable<string> paths)
+    {
+        var all = paths.Select(p => p.Trim().Trim('"')).Where(p => p.Length > 0).ToList();
+        var a = all.FirstOrDefault(Archive.IsArchive);
+        if (a != null) { Browse(Archive.FirstVolume(a)); return; }
+        var loose = all.Where(p => File.Exists(p) || Directory.Exists(p)).ToList();
+        if (loose.Count > 0) Compose(loose);
+    }
+
+    public void Browse(string arc, string password = null)
+    {
+        using var b = new BrowserForm(arc, password);
+        b.ShowDialog(this);
+    }
+
+    public void Compose(List<string> srcs)
+    {
+        using var c = new CompressForm(srcs);
+        c.ShowDialog(this);
     }
 
     void Rebuild()
@@ -300,11 +345,12 @@ class MainForm : Form
         int busy = JobQueue.Shared.Busy;
         Text = busy > 0 ? $"{AppName} ({busy})" : AppName;
         clearLink.Visible = JobQueue.Shared.Jobs.Any(j => j.State == JobState.Done);
-        updateLink.Visible = Updater.Now != Updater.State.Idle;
+        updateLink.Visible = Updater.Now is not (Updater.State.Idle or Updater.State.Downloading);
         updateLink.Enabled = Updater.Now != Updater.State.Working;
         updateLink.Text = Updater.Now switch
         {
             Updater.State.Working => L("正在更新…", "Updating…"),
+            Updater.State.Ready => L($"新版本 {Prefs.Current.LatestVersion} 已下好，关掉后自动装上 · 现在装", $"Version {Prefs.Current.LatestVersion} installs when you quit · Install now"),
             Updater.State.Failed => L("更新失败，去下载", "Update failed — download"),
             _ => L($"有新版本 {Prefs.Current.LatestVersion} · 更新", $"Update to {Prefs.Current.LatestVersion}"),
         };
@@ -346,11 +392,7 @@ class MainForm : Form
         statusBar.Controls.Add(right);
     }
 
-    void Browse(Job j)
-    {
-        using var b = new BrowserForm(j);
-        b.ShowDialog(this);
-    }
+    void Browse(Job j) => Browse(j.Sources[0], j.Password);
 }
 
 /// 列表里的一行：图标 + 名字 + 状态（进度/密码框/结果/报错）
@@ -422,7 +464,7 @@ class JobRow : Panel
         head.Controls.Add(title);
         int vols = job.VolumeCount;
         if (vols > 1) head.Controls.Add(Theme.Lbl(L($"{vols} 卷", $"{vols} parts"), Theme.Faint, 10, false, new Padding(8, 3, 0, 0)));
-        if (job.Kind == JobKind.Compress) head.Controls.Add(Theme.Lbl("→ zip", Theme.Faint, 10, false, new Padding(8, 3, 0, 0)));
+        if (job.Kind == JobKind.Compress) head.Controls.Add(Theme.Lbl(job.CompressTag, Theme.Faint, 10, false, new Padding(8, 3, 0, 0)));
         if (job.State != JobState.Working)
             head.Controls.Add(Theme.Link(L("移除", "Remove"), () => JobQueue.Shared.Remove(job), Theme.Faint, 9, new Padding(12, 4, 0, 0)));
         body.Controls.Add(head);
@@ -536,9 +578,24 @@ class SettingsForm : Form
         Box(L(".tar.gz / .tgz 一次解到底", "Unpack .tar.gz in one step"), p.NestedTar, v => p.NestedTar = v);
         Box(L("解完在资源管理器里选中", "Show in Explorer when done"), p.Reveal, v => p.Reveal = v);
         Box(L("解完把压缩包移到回收站（分卷一起）", "Move archive (all parts) to Recycle Bin when done"), p.TrashAfter, v => p.TrashAfter = v);
+        Box(L("双击压缩包时先看内容，不直接解开", "Double-click an archive to browse it first"), p.BrowseOnOpen, v => p.BrowseOnOpen = v);
         Box(L("双击压缩包打开时，解完自动退出", "Quit after extracting files opened from Explorer"), p.QuitAfter, v => p.QuitAfter = v);
-        Box(L("打开时检查有没有新版本", "Check for a new version on launch"), p.AutoUpdate, v => p.AutoUpdate = v);
-        Box(L("资源管理器右键菜单加「用解压处理」", "Add “Open with Unpack” to the Explorer context menu"), ContextMenu.Installed, ContextMenu.Set);
+        Box(L("自动更新（有新版就在后台下好，关掉解压时装上）", "Update automatically (downloads in the background, installs when you quit)"), p.AutoUpdate, v => p.AutoUpdate = v);
+        Box(L("资源管理器右键菜单加「用解压处理」「用解压查看内容」", "Add “Open with Unpack” and “Browse with Unpack” to the Explorer context menu"), ContextMenu.Installed, ContextMenu.Set);
+        col.Controls.Add(Theme.RuleLine(new Padding(0, 8, 0, 8)));
+        var fmt = Theme.Row(new Padding(0, 3, 0, 3));
+        fmt.Controls.Add(Theme.Lbl(L("拖进来压缩成", "Compress to"), Theme.Text, 10, false, new Padding(0, 4, 8, 0)));
+        var format = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 70, Margin = new Padding(0, 0, 8, 0) };
+        format.Items.AddRange(new object[] { "zip", "7z" });
+        format.SelectedIndex = p.Format == "7z" ? 1 : 0;
+        format.SelectedIndexChanged += (_, _) => { p.Format = (string)format.SelectedItem!; p.Save(); };
+        var level = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150 };
+        foreach (var (_, t) in CompressOptions.Levels) level.Items.Add(t);
+        level.SelectedIndex = Math.Max(0, Array.FindIndex(CompressOptions.Levels, x => x.Item1 == p.Level));
+        level.SelectedIndexChanged += (_, _) => { p.Level = CompressOptions.Levels[level.SelectedIndex].Item1; p.Save(); };
+        fmt.Controls.Add(format); fmt.Controls.Add(level);
+        col.Controls.Add(fmt);
+        col.Controls.Add(Theme.Lbl(L("要设密码、分卷：按住 Alt 拖进来，或 Ctrl+N", "For password or split: hold Alt while dropping, or Ctrl+N"), Theme.Faint, 9, false, new Padding(0, 2, 0, 0)));
         col.Controls.Add(Theme.RuleLine(new Padding(0, 8, 0, 8)));
         Box(L("输对的密码记进密码本（用 Windows 账户加密保存）", "Save correct passwords (encrypted with your Windows account)"), p.RememberPw, v => p.RememberPw = v);
         int saved = Passwords.All().Count;

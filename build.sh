@@ -28,6 +28,8 @@ printf '"CFBundleName" = "解压";\n"CFBundleDisplayName" = "解压";\n' > "$APP
 printf '"CFBundleName" = "Unpack";\n"CFBundleDisplayName" = "Unpack";\n' > "$APP/Contents/Resources/en.lproj/InfoPlist.strings"
 printf '"用「解压」处理" = "用「解压」处理";\n' > "$APP/Contents/Resources/zh-Hans.lproj/ServicesMenu.strings"
 printf '"用「解压」处理" = "Unpack or Zip";\n' > "$APP/Contents/Resources/en.lproj/ServicesMenu.strings"
+printf '"用「解压」查看内容" = "用「解压」查看内容";\n' >> "$APP/Contents/Resources/zh-Hans.lproj/ServicesMenu.strings"
+printf '"用「解压」查看内容" = "Browse with Unpack";\n' >> "$APP/Contents/Resources/en.lproj/ServicesMenu.strings"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -77,6 +79,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
       <key>NSMenuItem</key><dict><key>default</key><string>用「解压」处理</string></dict>
       <key>NSRequiredContext</key><dict/>
       <key>NSSendFileTypes</key><array><string>public.item</string></array>
+    </dict>
+    <!-- 右键 →「用「解压」查看内容」：不解开，先看里面有什么、可以改 -->
+    <dict>
+      <key>NSMessage</key><string>browseFiles</string>
+      <key>NSMenuItem</key><dict><key>default</key><string>用「解压」查看内容</string></dict>
+      <key>NSRequiredContext</key><dict/>
+      <key>NSSendFileTypes</key><array><string>public.archive</string><string>public.zip-archive</string></array>
     </dict>
   </array>
 </dict></plist>

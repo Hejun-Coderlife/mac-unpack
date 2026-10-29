@@ -12,6 +12,7 @@ class Job
     public readonly JobKind Kind;
     public readonly List<string> Sources;
     public readonly List<string> Selection;   // 只解其中几项（从「查看内容」里勾的）
+    public readonly CompressOptions Options;  // 压缩任务用
     public JobState State = JobState.Waiting;
     public double Fraction;
     public string Detail = "";
@@ -25,10 +26,15 @@ class Job
     public event Action Changed;          // 状态变了（界面要重排）
     public event Action ProgressChanged;  // 只是进度和文字变了
 
-    public Job(JobKind kind, List<string> sources, List<string> selection = null, string password = null)
+    public Job(JobKind kind, List<string> sources, List<string> selection = null, string password = null, CompressOptions options = null)
     {
-        Kind = kind; Sources = sources; Selection = selection; Password = password;
+        Kind = kind; Sources = sources; Selection = selection; Password = password; Options = options ?? CompressOptions.FromPrefs();
     }
+
+    /// 标题后面的灰字：→ zip、→ 7z · 加密 · 分卷
+    public string CompressTag => "→ " + Options.Format
+        + (string.IsNullOrEmpty(Options.Password) ? "" : I18n.L(" · 加密", " · encrypted"))
+        + (Options.SplitMB > 0 ? I18n.L(" · 分卷", " · split") : "");
 
     public string Title => Kind == JobKind.Extract
         ? Path.GetFileName(Sources[0]) + (Selection != null ? I18n.L($"（选中 {Selection.Count} 项）", $" ({Selection.Count} selected)") : "")
@@ -50,7 +56,7 @@ class Job
         if (Kind == JobKind.Compress)
         {
             Ui.Post(() => { Detail = I18n.L("准备压缩…", "Preparing…"); ProgressChanged?.Invoke(); });
-            Finish(Engine.Compress(Sources, r, Report));
+            Finish(Engine.Compress(Sources, Options, r, Report));
             return;
         }
         var arc = Sources[0];
@@ -108,6 +114,7 @@ class JobQueue
     public static readonly JobQueue Shared = new();
     public readonly List<Job> Jobs = new();
     public bool OpenedByShell;
+    public bool Browsing;   // 「查看内容」窗口开着：解完别自动退出
     public event Action ListChanged;
     public event Action AllDone;
 
@@ -156,7 +163,7 @@ class JobQueue
         if (next == null)
         {
             // 双击压缩包打开、而且全部顺利解完：自动退出（设置里打开才这样）
-            if (OpenedByShell && Prefs.Current.QuitAfter && Jobs.Count > 0 && Jobs.All(j => j.State == JobState.Done)) AllDone?.Invoke();
+            if (OpenedByShell && !Browsing && Prefs.Current.QuitAfter && Jobs.Count > 0 && Jobs.All(j => j.State == JobState.Done)) AllDone?.Invoke();
             return;
         }
         next.State = JobState.Working;

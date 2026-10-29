@@ -9,16 +9,22 @@ Mac 上的解压/压缩小工具：把压缩包拖进窗口（或双击、拖到
 - 智能放置：只有一个顶层文件夹就直接放出来，零散多个就装进以压缩包命名的文件夹；重名自动加编号
 - .tar.gz 一次解到底；去掉 __MACOSX / .DS_Store / Thumbs.db；保留下载隔离标记
 - 解之前查空间；进度、速度、剩余时间；可只勾选几个文件解；空格键快速预览包里的文件
-- 拖进文件夹或普通文件 → 压成 zip（UTF-8 文件名，发给 Windows 也不乱码）
+- 拖进文件夹或普通文件 → 压成 zip（UTF-8 文件名，发给 Windows 也不乱码）；设置里可改成默认压 7z、调压缩程度
+- 按住 ⌥ 拖进来（或 ⌘N）：先选 zip / 7z、压缩程度、密码（zip 用 AES-256，7z 可连文件名一起加密）、分卷（25 MB / 100 MB / 1 GB / 4 GB）
+- 自动更新：有新版就在后台下好，退出时换上，下次打开就是新版（设置里可关；状态栏点「现在更新」立刻换）
+- 查看内容（访达右键「用「解压」查看内容」、⌘⇧O，或按住 ⌥ 拖进压缩包；设置里可改成双击就先看）：像文件夹一样一层层点进去；zip / 7z / tar 能直接往里拖文件、删除、改名，加密包新加的文件沿用原密码和加密方式（RAR、分卷包、旧编码 zip 只能看）
 
 编译：`./build.sh`（只要命令行开发工具），装到 /Applications/解压.app。
 自测（不弹窗）：`UNPACK_TEST=a.zip:b.7z UNPACK_DEST=/tmp/out [UNPACK_PW=密码] /Applications/解压.app/Contents/MacOS/Unpack`
+- 压缩选项：对文件夹/普通文件加 `UNPACK_FORMAT=7z UNPACK_LEVEL=9 UNPACK_PW=密码 UNPACK_SPLIT=分卷MB`
+- 改包：`UNPACK_EDIT="add<Tab>包里文件夹<Tab>/本机/文件;rename<Tab>旧路径<Tab>新名字;delete<Tab>路径"`，改完列出内容
+- 截图：`UNPACK_SHOW=browse:压缩包` / `compose:文件` 直接打开对应窗口
 
 vendor/7zz 来自 7-Zip（www.7-zip.org，GNU LGPL）；vendor/unar 来自 The Unarchiver（LGPL）。
 
 ## Windows 版
 
-`windows/` 里是 Windows 版（C# / .NET 8 WinForms，x64 单文件，不用装 .NET），功能和 Mac 版对齐：拖进来就解、分卷、密码本（用 Windows 账户 DPAPI 加密存在 `%APPDATA%\Unpack`）、GBK/日文/繁体 zip 自动识别编码、智能放置、.tar.gz 一步解到底、去垃圾文件、勾选部分文件解、拖文件夹压成 UTF-8 zip；设置里可把「用解压处理」加进资源管理器右键菜单（只写 HKCU，不要管理员）。
+`windows/` 里是 Windows 版（C# / .NET 8 WinForms，x64 单文件，不用装 .NET），功能和 Mac 版对齐：拖进来就解、分卷、密码本、压缩选项（按住 Alt 拖进来 / Ctrl+N）、查看内容并直接改包（右键 / Ctrl+Shift+O / 按住 Alt 拖进来）、后台自动更新（用 Windows 账户 DPAPI 加密存在 `%APPDATA%\Unpack`）、GBK/日文/繁体 zip 自动识别编码、智能放置、.tar.gz 一步解到底、去垃圾文件、勾选部分文件解、拖文件夹压成 UTF-8 zip；设置里可把「用解压处理」加进资源管理器右键菜单（只写 HKCU，不要管理员）。
 
 - 引擎：放在 `解压.exe` 旁边的官方 7-Zip（`7z.exe` + `7z.dll`，自带 RAR 解码，`-mcp=` 在 Windows 上有效，所以不需要 unar / bsdtar）
 - 编译和打包在 GitHub Actions 的 Windows 机器上做（`.github/workflows/windows.yml`）：下载官方 7-Zip → `dotnet publish` → 打成 `Unpack-Windows-x64.zip` → 跑 `windows/tests/run_tests.py` 自测

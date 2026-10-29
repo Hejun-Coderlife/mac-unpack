@@ -42,10 +42,14 @@ class Prefs
     public bool NestedTar { get; set; } = true;     // .tar.gz 这类一次解到底
     public bool QuitAfter { get; set; } = true;     // 双击压缩包打开时，全部解完自动退出
     public bool RememberPw { get; set; } = true;    // 输对的密码记进密码本
-    public bool AutoUpdate { get; set; } = true;    // 每天看一次 GitHub 上有没有新版本
+    public bool AutoUpdate { get; set; } = true;    // 自动更新：打开时看 GitHub 有没有新版，有就后台下好，关掉解压时装上
+    public bool BrowseOnOpen { get; set; } = false; // 双击压缩包时先看内容，不直接解开
+    public string Format { get; set; } = "zip";     // 拖进来压缩时用的格式：zip / 7z
+    public int Level { get; set; } = 5;             // 压缩程度：0 只打包 / 1 快 / 5 标准 / 9 最小
     public DateTime LastUpdateCheck { get; set; }
     public string LatestVersion { get; set; } = "";
     public string LatestAsset { get; set; } = "";
+    public string ReadySetup { get; set; } = "";    // 已经下好、等关掉时装的新版安装包
 
     public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Unpack");
     static readonly string FilePath = Path.Combine(Dir, "settings.json");
@@ -105,12 +109,14 @@ static class Passwords
 }
 
 // ---- 压缩包里的一项 ----
-record Entry(int Id, string Path, long Size, bool IsDir, bool Encrypted);
+// Method 比如 "AES-256 Deflate"：往加密 zip 里加文件时沿用同一种加密
+record Entry(int Id, string Path, long Size, bool IsDir, bool Encrypted, string Method = "");
 
 class Listing
 {
     public string Type = "";
     public List<Entry> Entries = new();
+    public bool HeaderEncrypted;   // 文件名也加密了（7z 的「加密文件名」）：往里加文件时要保持
     public bool AnyEncrypted => Entries.Any(e => e.Encrypted);
     public long TotalSize => Entries.Sum(e => e.Size);
 }
@@ -178,10 +184,11 @@ static class SevenZip
     public class Res { public int Code; public string Out = ""; public string Err = ""; public string All => Out + "\n" + Err; }
 
     /// 跑一次 7z.exe；onOut 收到标准输出的每一块（进度百分比在里面，用退格刷新，没有换行）
-    public static Res Run(IEnumerable<string> args, Runner runner = null, Action<string> onOut = null)
+    public static Res Run(IEnumerable<string> args, Runner runner = null, Action<string> onOut = null, string cwd = null)
     {
         var psi = new ProcessStartInfo(Bin)
         {
+            WorkingDirectory = cwd ?? "",   // 往包里加文件：在暂存目录里跑，传相对路径，包里就是这个路径
             UseShellExecute = false, CreateNoWindow = true,
             RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true,
             StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
@@ -264,7 +271,8 @@ static class SevenZip
             f.TryGetValue("Size", out var size);
             f.TryGetValue("Attributes", out var attr);
             listing.Entries.Add(new Entry(listing.Entries.Count, path, long.TryParse(size, out var sz) ? sz : 0,
-                f.GetValueOrDefault("Folder") == "+" || (attr ?? "").StartsWith("D"), f.GetValueOrDefault("Encrypted") == "+"));
+                f.GetValueOrDefault("Folder") == "+" || (attr ?? "").StartsWith("D"), f.GetValueOrDefault("Encrypted") == "+",
+                f.GetValueOrDefault("Method") ?? ""));
         }
         return listing;
     }
@@ -514,10 +522,12 @@ static class Engine
             foreach (var c in Book())
             {
                 var t = SevenZip.List(arc, c, cp);
-                if (t.Ok) return Result<(Listing, string)>.Success((t.Value, c));
+                if (t.Ok) { t.Value.HeaderEncrypted = true; return Result<(Listing, string)>.Success((t.Value, c)); }
             }
             return Result<(Listing, string)>.Fail(new ZError(ZKind.NeedPassword));
         }
+        // 用手输的密码读出来的：不带密码读不读得出，决定了文件名是不是也加密了
+        if (!string.IsNullOrEmpty(given) && SevenZip.List(arc, "", cp) is { Ok: false } bare && bare.Error.Kind == ZKind.WrongPassword) l.Value.HeaderEncrypted = true;
         var probe = l.Value.Entries.Where(e => e.Encrypted && !e.IsDir).OrderBy(e => e.Size).FirstOrDefault();
         if (probe == null) return Result<(Listing, string)>.Success((l.Value, given));
         if (given != null)
@@ -626,19 +636,37 @@ static class Engine
         }
     }
 
-    public static Result<string> Compress(List<string> srcs, Runner runner, Action<Progress> progress)
+    public static Result<string> Compress(List<string> srcs, CompressOptions o, Runner runner, Action<Progress> progress)
     {
         var parent = DestDir(srcs[0]);
-        var name = srcs.Count == 1 ? Path.GetFileName(srcs[0].TrimEnd('\\', '/')) : I18n.L("归档", "Archive");
-        var output = Fs.Unique(Path.Combine(parent, name + ".zip"));
+        var name = string.IsNullOrWhiteSpace(o.Name) ? CompressOptions.DefaultName(srcs) : o.Name;
+        // 分卷时实际文件是 名字.zip.001、.002…：编号要躲开这些已经存在的
+        var output = Path.Combine(parent, $"{name}.{o.Format}");
+        for (int i = 2; File.Exists(output) || Directory.Exists(output) || File.Exists(output + ".001"); i++) output = Path.Combine(parent, $"{name} {i}.{o.Format}");
         long total = srcs.Sum(Fs.SizeOf);
-        // -mcu=on：文件名一律存 UTF-8 并打标记，到哪台电脑上都不乱码；不带 Mac 的 .DS_Store 和 ._ 资源文件
-        var args = new List<string> { "a", "-tzip", "-mcu=on", "-mx=5", "-bsp1", "-bso0", "-bse2", "-sccUTF-8",
-            "-xr!.DS_Store", "-xr!__MACOSX", "-xr!._*", "-xr!Thumbs.db", output };
+        // zip 用 -mcu=on：文件名一律存 UTF-8 并打标记，到哪台电脑上都不乱码；不带 Mac 的 .DS_Store 和 ._ 资源文件
+        var args = new List<string> { "a", "-t" + o.Format, "-mx=" + o.Level, "-bsp1", "-bso0", "-bse2", "-sccUTF-8",
+            "-xr!.DS_Store", "-xr!__MACOSX", "-xr!._*", "-xr!Thumbs.db" };
+        if (o.Format == "zip") args.Add("-mcu=on");
+        if (!string.IsNullOrEmpty(o.Password))
+        {
+            args.Add("-p" + o.Password);
+            args.Add(o.Format == "zip" ? "-mem=AES256" : "-mhe=" + (o.EncryptNames ? "on" : "off"));
+        }
+        if (o.SplitMB > 0) args.Add($"-v{o.SplitMB}m");
+        args.Add(output);
         args.AddRange(srcs);
         var r = Run7z(args, total, I18n.L("压缩", "Compressing"), runner, progress);
-        if (r.Code != 0) { try { File.Delete(output); } catch { } return Result<string>.Fail(SevenZip.Classify(r, runner)); }
-        return Result<string>.Success(output);
+        var parts = Archive.Volumes(output + ".001").Where(File.Exists).ToList();
+        if (r.Code != 0)
+        {
+            try { File.Delete(output); } catch { }
+            if (o.SplitMB > 0) foreach (var v in parts) { try { File.Delete(v); } catch { } }
+            return Result<string>.Fail(SevenZip.Classify(r, runner));
+        }
+        // 设了分卷但没超过一卷：7-Zip 也会出一个 .001，改回正常名字
+        if (o.SplitMB > 0 && parts.Count == 1) { try { File.Move(parts[0], output); } catch { } }
+        return Result<string>.Success(o.SplitMB > 0 && parts.Count > 1 ? parts[0] : output);
     }
 
     static readonly Regex Pct = new(@"(\d+)%");
@@ -686,4 +714,115 @@ static class Engine
         Directory.EnumerateFileSystemEntries(dir)
             .Where(p => !Path.GetFileName(p).StartsWith(".tar-"))   // 拆 tar 用的临时夹不算
             .OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToList();
+}
+
+// ---- 压缩选项：直接拖进来就用设置里的格式和程度；按住 Alt 拖进来（或 Ctrl+N）可以另设名字、密码、分卷 ----
+class CompressOptions
+{
+    public string Name = "";           // 空 = 按拖进来的东西起名
+    public string Format = "zip";      // zip / 7z
+    public int Level = 5;              // 0 只打包 / 1 快 / 5 标准 / 9 最小
+    public string Password = "";
+    public bool EncryptNames = true;   // 7z 才有：连文件名也加密，不输密码看不到里面有什么
+    public int SplitMB;                // 0 = 不分卷
+
+    public static CompressOptions FromPrefs() => new() { Format = Prefs.Current.Format == "7z" ? "7z" : "zip", Level = Prefs.Current.Level };
+    public static string DefaultName(List<string> srcs) => srcs.Count == 1 ? Path.GetFileName(srcs[0].TrimEnd('\\', '/')) : I18n.L("归档", "Archive");
+
+    public static readonly (int, string)[] Levels = { (0, I18n.L("只打包，不压缩", "Store only")), (1, I18n.L("快", "Fast")),
+        (5, I18n.L("标准", "Normal")), (9, I18n.L("最小（慢）", "Smallest (slow)")) };
+    public static readonly (int, string)[] Splits = { (0, I18n.L("不分卷", "No split")), (25, I18n.L("每卷 25 MB（邮件附件）", "25 MB parts (email)")),
+        (100, "100 MB"), (1000, "1 GB"), (4000, I18n.L("4 GB（U 盘 FAT32）", "4 GB (FAT32 drives)")) };
+}
+
+// ---- 直接改压缩包：加文件、删文件、改名（7-Zip 先写临时包再换掉原包，中途失败原包不动）----
+static class Editor
+{
+    /// 改不了就返回原因；null = 能改
+    public static string Blocker(string arc, Listing listing, int? cp)
+    {
+        var t = listing.Type.ToLowerInvariant();
+        if (!new[] { "zip", "7z", "tar", "wim" }.Contains(t))
+            return I18n.L($"{listing.Type} 格式只能看、不能改（能改的是 zip / 7z / tar）", $"{listing.Type} can be viewed but not edited (zip / 7z / tar can)");
+        if (Archive.Volumes(arc).Count > 1) return I18n.L("分卷包只能看、不能改", "Split archives can't be edited");
+        if (cp is int c && c != 65001)
+            return I18n.L($"这个包的文件名是旧编码（{NameFixer.Charset(cp)}），改了会乱码，只能看", $"Names use a legacy encoding ({NameFixer.Charset(cp)}); editing would garble them");
+        try { if (new FileInfo(arc).IsReadOnly) return I18n.L("这个文件是只读的，不能改", "The file is read-only"); } catch { }
+        return null;
+    }
+
+    /// 原包加了密码：新加进去的也用同一个密码、同一种加密
+    static List<string> CryptArgs(Listing listing, string password, int? cp)
+    {
+        var t = listing.Type.ToLowerInvariant();
+        var a = new List<string>(SevenZip.Cp(cp));
+        if (t == "zip") a.Add("-mcu=on");
+        if (string.IsNullOrEmpty(password) || !(listing.AnyEncrypted || listing.HeaderEncrypted)) return a;
+        a.Add("-p" + password);
+        if (t == "zip" && listing.Entries.Any(e => e.Method.Contains("AES"))) a.Add("-mem=AES256");
+        if (t == "7z" && listing.HeaderEncrypted) a.Add("-mhe=on");
+        return a;
+    }
+
+    static Result<bool> Check(SevenZip.Res r, Runner runner) => r.Code == 0 ? Result<bool>.Success(true) : Result<bool>.Fail(SevenZip.Classify(r, runner));
+
+    /// 把 files 加到包里的 dir 文件夹下（dir 为空 = 最外层）；同名的会被替换
+    public static Result<bool> Add(List<string> files, string dir, string arc, Listing listing, string password, int? cp, Runner runner)
+    {
+        var stage = Path.Combine(Path.GetTempPath(), "unpack-add-" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            var target = string.IsNullOrEmpty(dir) ? stage : Path.Combine(stage, dir);
+            Directory.CreateDirectory(target);
+            var rel = new List<string>();
+            foreach (var f in files)
+            {
+                var n = Path.GetFileName(f.TrimEnd('\\', '/'));
+                CopyAny(f, Path.Combine(target, n));
+                rel.Add(string.IsNullOrEmpty(dir) ? n : dir.TrimEnd('\\', '/') + "\\" + n);
+            }
+            var args = new List<string> { "a", "-bso0", "-bse2", "-sccUTF-8", "-xr!.DS_Store", "-xr!__MACOSX", "-xr!._*", "-xr!Thumbs.db" };
+            args.AddRange(CryptArgs(listing, password, cp));
+            args.Add(arc);
+            args.AddRange(rel);
+            return Check(SevenZip.Run(args, runner, null, stage), runner);
+        }
+        catch (Exception e) { return Result<bool>.Fail(new ZError(ZKind.Failed, e.Message)); }
+        finally { try { Directory.Delete(stage, true); } catch { } }
+    }
+
+    static void CopyAny(string from, string to)
+    {
+        if (File.Exists(from)) { File.Copy(from, to, true); return; }
+        Directory.CreateDirectory(to);
+        foreach (var f in Directory.EnumerateFiles(from)) File.Copy(f, Path.Combine(to, Path.GetFileName(f)), true);
+        foreach (var d in Directory.EnumerateDirectories(from)) CopyAny(d, Path.Combine(to, Path.GetFileName(d)));
+    }
+
+    public static Result<bool> Delete(List<string> paths, string arc, Listing listing, string password, int? cp, Runner runner)
+    {
+        // 名字表 + -spd：名字里有 * ? [ 也按原样认，不当通配符；删文件夹会连里面的一起删
+        var lf = Path.Combine(Path.GetTempPath(), $"unpack-del-{Guid.NewGuid():N}.txt");
+        try
+        {
+            File.WriteAllText(lf, string.Join("\n", paths), new UTF8Encoding(false));
+            var args = new List<string> { "d", "-bso0", "-bse2", "-sccUTF-8", "-spd", "-scsUTF-8" };
+            args.AddRange(CryptArgs(listing, password, cp));
+            args.Add(arc); args.Add("@" + lf);
+            return Check(SevenZip.Run(args, runner), runner);
+        }
+        catch (Exception e) { return Result<bool>.Fail(new ZError(ZKind.Failed, e.Message)); }
+        finally { try { File.Delete(lf); } catch { } }
+    }
+
+    /// 改名（文件夹改名，里面的东西跟着走）
+    public static Result<bool> Rename(string path, string newName, string arc, Listing listing, string password, int? cp, Runner runner)
+    {
+        int i = path.TrimEnd('\\', '/').LastIndexOfAny(new[] { '\\', '/' });
+        var dest = i < 0 ? newName : path[..(i + 1)] + newName;
+        var args = new List<string> { "rn", "-bso0", "-bse2", "-sccUTF-8" };
+        args.AddRange(CryptArgs(listing, password, cp));
+        args.Add(arc); args.Add(path); args.Add(dest);
+        return Check(SevenZip.Run(args, runner), runner);
+    }
 }
