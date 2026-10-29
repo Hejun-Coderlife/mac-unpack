@@ -167,7 +167,9 @@ jobs:
           Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue
                     # 卸载：注册的东西都要清掉
           $u = Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -PassThru; $u.WaitForExit()
-          Start-Sleep 3
+          # 卸载程序会把自己复制到临时目录再跑，原进程马上就退：等文件真被删掉
+          for ($i = 0; $i -lt 30 -and (Test-Path "$app\解压.exe"); $i++) { Start-Sleep 1 }
+          Start-Sleep 2
           if (Test-Path "HKCU:\Software\Classes\Unpack.Archive") { throw "ProgID left after uninstall" }
           if ((Get-ItemProperty "HKCU:\Software\Classes\.rar" -ErrorAction SilentlyContinue).'(default)' -eq "Unpack.Archive") { throw ".rar still associated" }
           if (Test-Path 'HKCU:\Software\Classes\*\shell\Unpack') { throw "context menu left" }
