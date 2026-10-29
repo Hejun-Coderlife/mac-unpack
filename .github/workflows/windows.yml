@@ -108,7 +108,7 @@ jobs:
           name: Unpack-Setup-x64
           path: Unpack-Setup-x64.exe
 
-      - name: Installer test
+      - name: Installer test   # 等安装程序用 WaitForExit：pwsh 的 Start-Process -Wait 会连子进程一起等，装完重新打开的解压.exe 一直开着就卡死
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -123,7 +123,7 @@ jobs:
           Get-Process | Where-Object { $_.ProcessName -like "Unpack-Setup*" -or $_.ProcessName -like "is-*" } | Stop-Process -Force -ErrorAction SilentlyContinue
           Start-Sleep 2
           # 静默装给当前用户
-          $p = Start-Process .\Unpack-Setup-x64.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/TASKS=assoc,menu" -PassThru -Wait
+          $p = Start-Process .\Unpack-Setup-x64.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/TASKS=assoc,menu" -PassThru; $p.WaitForExit()
           if ($p.ExitCode -ne 0) { throw "setup exit $($p.ExitCode)" }
           $app = "$env:LOCALAPPDATA\Programs\Unpack"
           foreach ($f in "解压.exe", "7z.exe", "7z.dll", "archive.ico", "unins000.exe") { if (!(Test-Path "$app\$f")) { throw "missing $f" } }
@@ -158,7 +158,7 @@ jobs:
           if ((Get-ChildItem $d).Count -le $before) { throw "open command did not extract zip" }
           Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue
           # 覆盖升级（软件里点「更新」走的就是这条）：静默装同一个包 + /RELAUNCH=1，装完软件要自己重新打开
-          $p = Start-Process .\Unpack-Setup-x64.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/RELAUNCH=1", "/LOG=$env:TEMP\upgrade.log" -PassThru -Wait
+          $p = Start-Process .\Unpack-Setup-x64.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/NORESTART", "/RELAUNCH=1", "/LOG=$env:TEMP\upgrade.log" -PassThru; $p.WaitForExit()
           if ($p.ExitCode -ne 0) { throw "upgrade exit $($p.ExitCode)" }
           for ($i = 0; $i -lt 15 -and !(Get-Process -Name "解压" -ErrorAction SilentlyContinue); $i++) { Start-Sleep 1 }
           if (!(Get-Process -Name "解压" -ErrorAction SilentlyContinue)) { Get-Content "$env:TEMP\upgrade.log" | Select-String -Pattern "Run|Filename|Process|exit|Error" ; throw "not relaunched after upgrade" }
@@ -166,7 +166,7 @@ jobs:
           Shot "6-after-upgrade"
           Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue
                     # 卸载：注册的东西都要清掉
-          $u = Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -PassThru -Wait
+          $u = Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -PassThru; $u.WaitForExit()
           Start-Sleep 3
           if (Test-Path "HKCU:\Software\Classes\Unpack.Archive") { throw "ProgID left after uninstall" }
           if ((Get-ItemProperty "HKCU:\Software\Classes\.rar" -ErrorAction SilentlyContinue).'(default)' -eq "Unpack.Archive") { throw ".rar still associated" }
