@@ -57,3 +57,32 @@ jobs:
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: "1"
         run: python windows/tests/run_tests.py dist\Unpack
+
+      - name: UI screenshots
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          function Shot($name) {
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("shots\$name.png"); $g.Dispose(); $bmp.Dispose()
+          }
+          New-Item -ItemType Directory shots | Out-Null
+          $exe = (Resolve-Path "dist\Unpack\解压.exe").Path
+          $p = Start-Process $exe -PassThru; Start-Sleep 6; Shot "1-empty"
+          # 再开一次带参数：交给已经开着的窗口（单实例），一个能解的 + 一个要密码的
+          New-Item -ItemType Directory demo | Out-Null
+          Set-Content demo\a.txt "hello"; & .\7zip\7z.exe a -p999 -mhe=on demo\locked.7z demo\a.txt | Out-Null
+          & .\7zip\7z.exe a demo\photos.zip demo\a.txt | Out-Null
+          Start-Process $exe -ArgumentList "`"$((Resolve-Path demo\photos.zip).Path)`"", "`"$((Resolve-Path demo\locked.7z).Path)`""
+          Start-Sleep 6; Shot "2-jobs"
+          if ($p.HasExited) { throw "main window exited" }
+          if ((Get-Process Unpack -ErrorAction SilentlyContinue | Measure-Object).Count -gt 1) { throw "second instance did not hand over" }
+          Stop-Process -Name Unpack -Force -ErrorAction SilentlyContinue
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-screenshots
+          path: shots/

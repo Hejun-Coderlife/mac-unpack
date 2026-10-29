@@ -295,7 +295,7 @@ static class NameFixer
             fs.Seek(size - tailLen, SeekOrigin.Begin);
             var tail = ReadExactly(fs, tailLen);
             static int U16(byte[] b, int i) => b[i] | b[i + 1] << 8;
-            static ulong U32(byte[] b, int i) => (ulong)U16(b, i) | (ulong)U16(b, i + 2) << 16;
+            static ulong U32(byte[] b, int i) => (ulong)(uint)U16(b, i) | (ulong)(uint)U16(b, i + 2) << 16;
             static ulong U64(byte[] b, int i) => U32(b, i) | U32(b, i + 4) << 32;
             int eocd = -1;
             for (int i = tail.Length - 22; i >= 0; i--)
