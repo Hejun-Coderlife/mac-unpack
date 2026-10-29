@@ -145,7 +145,7 @@ const $ = id => document.getElementById(id);
 
 // ---------------- 时间线：每段的长度 = 最短时长 和 旁白说完 + 0.6 秒 取大 ----------------
 const LINES = [
-  { key: 'a', scene: 'V', at: .35, text: '一个压缩包，拖进来，就解开。' },
+  { key: 'a', scene: 'V', at: .3, text: '我自己做了个 Mac 解压软件，压缩包拖进来，就解开。' },
   { key: 'b', scene: 'T', at: .2, text: 'zip、7z、rar，分卷包、加密包，都能解。' },
   { key: 'c', scene: 'P', at: .3, text: '加密包？存过的密码，它会自动帮你试。' },
   { key: 'd', scene: 'G', at: .25, text: 'Windows 打包的中文乱码，也能自动修好。' },
@@ -202,7 +202,9 @@ for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
   const ringR = 8.6 + 0.35 * Math.sin(a * 3 + 1.3);
   cells.push({ x, z, r, ring: Math.abs(r - ringR) < 0.6, core: r < 2.9 + 0.7 * hash(j, i), n: hash(i * 7.1, j * 3.3) });
 }
-const BURST = 1.45;
+// 「压缩包拖进来」说完、「就解开」出口时炸开
+const VA = VOICE.find(v => v.key === 'a');
+const BURST = Math.max(1.45, VA.at + VA.dur * 0.68);
 const cPaper = new THREE.Color(PAPER), cInk = new THREE.Color(INK), cBlue = new THREE.Color(BLUE), cWhite = new THREE.Color(0xffffff), tmpC = new THREE.Color();
 const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), P = new THREE.Vector3(), S = new THREE.Vector3();
 const block = new THREE.InstancedMesh(cubeGeo, new THREE.MeshStandardMaterial({ roughness: 0.5 }), 64);
@@ -215,7 +217,7 @@ for (let a = 0; a < 4; a++) for (let b = 0; b < 4; b++) for (let c = 0; c < 4; c
   blockCubes.push({ home, to: new THREE.Vector3(Math.cos(ang) * rad, 0.6, Math.sin(ang) * rad), spin: hash(a * 3, c * 5) * 6, seam: c === 3 && a === (b % 2 ? 2 : 1) });   // 拉链齿：一左一右交错
 }
 function frameV(s) {
-  const orbit = 0.7 + s * 0.06, push = easeInOut((s - 1.6) / 2.6);
+  const orbit = 0.7 + s * 0.06, push = easeInOut((s - BURST - 0.15) / 2.6);
   const dist = lerp(44, 30, push);
   camV.position.set(Math.cos(orbit) * dist, lerp(27, 30, push), Math.sin(orbit) * dist);
   camV.lookAt(0, lerp(1.5, 0.3, push), 0);
@@ -238,7 +240,7 @@ function frameV(s) {
   for (let k = 0; k < 64; k++) {
     const b = blockCubes[k];
     if (since < 0) {
-      const shake = smooth((s - 0.9) / 0.55) * 0.07 * Math.sin(s * 70 + k);
+      const shake = smooth((s - BURST + 0.55) / 0.55) * 0.07 * Math.sin(s * 70 + k);
       P.copy(b.home).multiplyScalar(0.94).add(new THREE.Vector3(shake, 0.7 + 0.15 * Math.sin(s * 1.6), -shake));
       P.applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.5 + s * 0.3); Q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.5 + s * 0.3); S.set(1, 1, 1);
     } else {

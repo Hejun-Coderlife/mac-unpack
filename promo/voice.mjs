@@ -1,5 +1,5 @@
 /* 旁白：每句合成一个 wav，量出时长，写 voice/voice.js（网页按时长排每段画面、出字幕）
-   用法：node voice.mjs                 微软晓晓（uvx edge-tts，要联网；连不上会自动走本机代理 7897 重试）
+   用法：node voice.mjs                 微软云希（男声）（uvx edge-tts，要联网；连不上会自动走本机代理 7897 重试）
         ONLY=c,d node voice.mjs         只重做某几句
         ENGINE=say node voice.mjs       用 macOS 自带语音（Tingting，机器人味重，只在 edge 用不了时临时顶一下）
    （照搬 mac-recorder/promo/voice.mjs 的做法）
@@ -12,11 +12,11 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIR = join(HERE, 'voice');
 const EDGE = process.env.ENGINE !== 'say';
-const VOICE = process.env.VOICE || (EDGE ? 'zh-CN-XiaoxiaoNeural' : 'Tingting');
+const VOICE = process.env.VOICE || (EDGE ? 'zh-CN-YunxiNeural' : 'Tingting');   // 男声云希（用户要男声；云扬 YunyangNeural 偏新闻播音腔）
 const RATE = process.env.RATE || (EDGE ? '+4%' : '190');
 
 export const LINES = [
-  { key: 'a', scene: 'V', at: .35, text: '一个压缩包，拖进来，就解开。' },
+  { key: 'a', scene: 'V', at: .3, text: '我自己做了个 Mac 解压软件，压缩包拖进来，就解开。' },
   { key: 'b', scene: 'T', at: .2, text: 'zip、7z、rar，分卷包、加密包，都能解。', spoken: 'zip、七z、rar，分卷包、加密包，都能解。' },
   { key: 'c', scene: 'P', at: .3, text: '加密包？存过的密码，它会自动帮你试。' },
   { key: 'd', scene: 'G', at: .25, text: 'Windows 打包的中文乱码，也能自动修好。' },

@@ -3,7 +3,7 @@
         node record.mjs --still 秒数 [秒数…]      （只截几张静帧到 /tmp/unpack_秒数.png，调画面用）
    （流程照搬 mac-recorder/promo/record.mjs，直接走 Chrome 调试协议，不用装任何 npm 包） */
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -65,7 +65,11 @@ const outro = await evaluate('PROMO.scenes.E.start');
 ws.close(); await quit();
 if (!voice.length) console.log('\n（没有旁白：先跑 node voice.mjs 生成 voice/，这次先出无旁白版）');
 const timeline = join(DIR, 'timeline.json'), music = join(DIR, 'music.wav');
-writeFileSync(timeline, JSON.stringify({ end, events, drop, outro, duck: voice.map(v => [v.at, v.at + v.dur, .42]) }));
+// 垫底音乐：MUSIC=音频文件（比如 music-options/A-弦乐拨奏.mp3）；不给就用 music.mp3（选定的那段），都没有就用程序合成的
+const bed = process.env.MUSIC || (existsSync(join(HERE, 'music.mp3')) ? join(HERE, 'music.mp3') : undefined);
+// 默认不带背景音乐（用户自己在抖音 / 剪辑软件里加）；SYNTH_MUSIC=1 才用程序合成的配乐
+const nomusic = !bed && !process.env.SYNTH_MUSIC;
+writeFileSync(timeline, JSON.stringify({ end, events, drop, outro, bed, nomusic, duck: voice.map(v => [v.at, v.at + v.dur, .42]) }));
 execFileSync('node', [join(HERE, 'audio.mjs'), timeline, music], { stdio: 'inherit' });
 console.log('合成视频…');
 // 旁白：每句一个 wav（输入从第 2 个起），按时间放好，和音乐混在一起再限幅

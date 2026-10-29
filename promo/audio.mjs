@@ -4,9 +4,10 @@
    用法：node audio.mjs 时间线.json 输出.wav
    时间线.json = { end, drop（律动进来的时刻）, outro（鼓停、只留钢琴的时刻）, events:[{t,type}], duck:[[开始,结束,压到多少],...]（旁白时段，音乐压低） */
 import { readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 
 const [, , IN, OUT] = process.argv;
-const { end, events, duck = [], drop = 1.45, outro = end - 4 } = JSON.parse(readFileSync(IN, 'utf8'));
+const { end, events, duck = [], drop = 1.45, outro = end - 4, bed, nomusic } = JSON.parse(readFileSync(IN, 'utf8'));   // nomusic：只要音效（背景音乐用户自己在剪辑软件里加）
 const SR = 48000, N = Math.ceil(end * SR);
 const L = new Float32Array(N), R = new Float32Array(N);     // 干声
 const VL = new Float32Array(N), VR = new Float32Array(N);   // 送混响的
@@ -89,20 +90,29 @@ const PROG = [
   { bass: 48, arp: [55, 60, 64, 67, 72, 67, 64, 60] },   // C
   { bass: 43, arp: [55, 59, 62, 67, 71, 67, 62, 59] },   // G
 ];
+if (nomusic) {
+  // 不要背景音乐
+} else if (bed) {
+  // 垫底音乐用真实录音（bed = 音频文件路径，比如 Apple Loops 拼好的那段）：解码成 48k 立体声，循环铺满整片
+  const pcm = execFileSync('ffmpeg', ['-v', 'error', '-i', bed, '-ac', '2', '-ar', String(SR), '-f', 'f32le', '-'], { maxBuffer: 1 << 30 });
+  const frames = pcm.length / 8;
+  for (let i = 0; i < N; i++) { const j = (i % frames) * 8; L[i] += pcm.readFloatLE(j) * 0.55; R[i] += pcm.readFloatLE(j + 4) * 0.55; }
+} else {
 // 开场：钢琴单音轻轻重复，像在等什么
-for (let t = 0.05, k = 0; t < drop - 0.05; t += E8, k++) piano(t, k % 4 === 3 ? 71 : 76, 0.32, E8 * 1.6, 0.15);
-piano(0.05, 45, 0.45, drop + 0.5);
-// 主体：钢琴八分律动 + 左手低音 + 竖琴琶音 + 沙锤 + 低鼓
-for (let t0 = drop, s = 0; t0 < outro - 1e-6; t0 += S16, s++) {
-  const bar = Math.floor(s / 16), pos = s % 16, ch = PROG[bar % 4];
-  if (pos === 0) { piano(t0, ch.bass - 12, 0.7, BAR * 0.95, -0.1); piano(t0, ch.bass, 0.5, BAR * 0.95, -0.1); }
-  if (pos % 2 === 0) piano(t0, ch.arp[(pos / 2) % 8], pos % 8 === 0 ? 0.55 : 0.4, E8 * 1.4, 0.2);
-  if (pos % 2 === 1 && bar % 2 === 1) pluck(t0, ch.arp[(pos + 3) % 8] + 12, 0.22, pos % 4 === 1 ? 0.5 : -0.5);
-  shaker(t0, pos % 4 === 2 ? 0.16 : 0.08, pos % 2 ? 0.3 : -0.3);
-  if (pos === 0 || pos === 10) lowDrum(t0, 0.5);
+  for (let t = 0.05, k = 0; t < drop - 0.05; t += E8, k++) piano(t, k % 4 === 3 ? 71 : 76, 0.32, E8 * 1.6, 0.15);
+  piano(0.05, 45, 0.45, drop + 0.5);
+  // 主体：钢琴八分律动 + 左手低音 + 竖琴琶音 + 沙锤 + 低鼓
+  for (let t0 = drop, s = 0; t0 < outro - 1e-6; t0 += S16, s++) {
+    const bar = Math.floor(s / 16), pos = s % 16, ch = PROG[bar % 4];
+    if (pos === 0) { piano(t0, ch.bass - 12, 0.7, BAR * 0.95, -0.1); piano(t0, ch.bass, 0.5, BAR * 0.95, -0.1); }
+    if (pos % 2 === 0) piano(t0, ch.arp[(pos / 2) % 8], pos % 8 === 0 ? 0.55 : 0.4, E8 * 1.4, 0.2);
+    if (pos % 2 === 1 && bar % 2 === 1) pluck(t0, ch.arp[(pos + 3) % 8] + 12, 0.22, pos % 4 === 1 ? 0.5 : -0.5);
+    shaker(t0, pos % 4 === 2 ? 0.16 : 0.08, pos % 2 ? 0.3 : -0.3);
+    if (pos === 0 || pos === 10) lowDrum(t0, 0.5);
+  }
+  // 结尾：律动停，一个舒展开的 Am(add9) 琶音收住
+  [45, 57, 64, 71, 72, 76].forEach((m, i) => piano(outro + 0.15 + i * 0.12, m, i ? 0.42 : 0.6, end - outro, (i - 2.5) * 0.12));
 }
-// 结尾：律动停，一个舒展开的 Am(add9) 琶音收住
-[45, 57, 64, 71, 72, 76].forEach((m, i) => piano(outro + 0.15 + i * 0.12, m, i ? 0.42 : 0.6, end - outro, (i - 2.5) * 0.12));
 
 // 旁白时段音乐压低（音效在后面加，不受影响）
 const duckAt = x => { let g = 1; for (const [a, b, lv = .45] of duck) { const k = Math.min(1, Math.max(0, Math.min((x - a + .25) / .25, (b + .35 - x) / .35))); g = Math.min(g, 1 - (1 - lv) * k); } return g; };
@@ -124,7 +134,13 @@ const sfx = {
   ok(t) { piano(t, 88, 0.35, 0.5, .2); piano(t + .08, 93, 0.3, 0.6, -.2); },
   chime(t) { [81, 84, 88, 93].forEach((m, i) => pluck(t + i * .07, m, 0.3, (i - 1.5) * .25, 0.995, 2.5, 0.6)); },
 };
-for (const e of events) sfx[e.type]?.(e.t);
+// 用真实音乐垫底时，只留不带音高的音效（风声、轻敲、低鼓），合成的钢琴、拨弦音效会和真乐器打架、显出电子味
+const KEEP = new Set(['whoosh', 'swipe', 'tick', 'riser']);
+for (const e of events) {
+  if (!bed && !nomusic) sfx[e.type]?.(e.t);
+  else if (KEEP.has(e.type)) sfx[e.type](e.t);
+  else if (e.type === 'boom') lowDrum(e.t, 0.9);
+}
 
 // ---------------- 房间混响（Schroeder：4 个梳状 + 2 个全通），只处理送过来的那份 ----------------
 function reverb(x) {
@@ -146,7 +162,7 @@ for (let i = 0; i < N; i++) { L[i] += RL[i] * 0.9; R[i] += RR[i] * 0.9; }
 const fade = Math.floor(1.0 * SR);
 let peak = 0;
 for (let i = 0; i < N; i++) { L[i] = Math.tanh(L[i] * 1.1); R[i] = Math.tanh(R[i] * 1.1); peak = Math.max(peak, Math.abs(L[i]), Math.abs(R[i])); }
-const g = .89 / peak;
+const g = nomusic ? 0.5 : .89 / peak;   // 只有音效时不放大到满，免得盖过旁白
 const buf = Buffer.alloc(44 + N * 4);
 buf.write('RIFF', 0); buf.writeUInt32LE(36 + N * 4, 4); buf.write('WAVEfmt ', 8);
 buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(2, 22); buf.writeUInt32LE(SR, 24); buf.writeUInt32LE(SR * 4, 28);
