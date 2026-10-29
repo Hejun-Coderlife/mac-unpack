@@ -1,0 +1,479 @@
+<!doctype html>
+<!-- Unpack 介绍视频（逐帧动画），全片用软件自己的配色：白纸、深灰字、Typora 蓝 #4183C4
+     V 白色方块阵：中间一块带深色拉链缝的白色「压缩包」炸开，围成深灰圆环，中间升起蓝色方块
+     T 白色图标砖：和 App 图标同款的白色圆角砖（zip / 7z / rar / 分卷 / 加密），一块块被拉开、蹦出蓝色小方块
+     P / G / L 软件界面（按真实截图 shots/ 用网页 1:1 重画，放大也清晰）：密码本自动试中 → 乱码被扫描修好 → 解完逐个打勾、清掉垃圾
+     E 结尾卡
+     每段多长由旁白决定（voice/voice.js，由 voice.mjs 生成；没有时按字数估）；PROMO.frame(t) 画任意一帧；不带 ?rec=1 打开就实时预览 -->
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Unpack 介绍视频</title>
+<script src="voice/voice.js" onerror="window.VOICE = null"></script>
+<style>
+  :root { --text: #333; --heading: #222; --sec: #777; --faint: #aaa; --rule: #eee; --link: #4183c4; --ok: #4e9a5b; --quote: #dfe2e5; --bar: #f8f8f8; }
+  html, body { margin: 0; height: 100%; background: #fff; overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; }
+  .layer { position: fixed; inset: 0; pointer-events: none; font-family: -apple-system, "PingFang SC", sans-serif; color: var(--text); }
+  #flash { background: #fff; opacity: 0; }
+
+  /* ---- 软件窗口（按 shots/list.png、browse.png 重画，设计尺寸 614×472，整体放大 1.7 倍）---- */
+  #ui { background: #fff; opacity: 0; perspective: 2400px; display: flex; align-items: center; justify-content: center; padding-bottom: 110px; box-sizing: border-box; }
+  #win { width: 614px; height: 472px; zoom: 1.7; position: relative; background: #fff; border-radius: 11px; overflow: hidden;
+         box-shadow: 0 0 0 .6px rgba(0,0,0,.18), 0 22px 60px rgba(0,0,0,.16), 0 4px 14px rgba(0,0,0,.06); transform-origin: 50% 50%; }
+  .lights { position: absolute; left: 13px; top: 12px; display: flex; gap: 8px; z-index: 5; }
+  .lights i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+  .view { position: absolute; inset: 0; opacity: 0; }
+  .doc { position: absolute; left: 44px; right: 44px; top: 46px; }
+  .doc h1 { margin: 0 0 10px; font-size: 30px; font-weight: 700; color: var(--heading); }
+  .hr { height: 1px; background: var(--rule); }
+  .hint { font-size: 14px; color: var(--sec); margin: 18px 0 6px; }
+  .link { color: var(--link); }
+  .row { display: flex; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--rule); position: relative; }
+  .row .ic { width: 22px; height: 22px; flex: none; margin-top: 1px; }
+  .row .name { font-size: 15px; font-weight: 600; color: var(--heading); }
+  .row .name small { font-weight: 400; color: var(--faint); font-size: 13px; margin-left: 8px; }
+  .row .st { font-size: 13px; color: var(--sec); margin-top: 6px; white-space: nowrap; }
+  .row .st .ck { color: var(--ok); margin-right: 6px; }
+  .row .st .dot { color: var(--faint); margin: 0 6px; }
+  .bar2 { height: 2px; background: var(--rule); border-radius: 1px; margin-top: 8px; position: relative; overflow: hidden; }
+  .bar2 i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--link); border-radius: 1px; }
+  .pw { display: flex; align-items: center; gap: 12px; margin-top: 8px; font-size: 13px; }
+  .pw .field { width: 200px; border-bottom: 1px solid var(--quote); padding-bottom: 3px; font-size: 14px; color: var(--text); letter-spacing: 2px; height: 18px; }
+  .status { position: absolute; left: 0; right: 0; bottom: 0; height: 30px; background: var(--bar); border-top: 1px solid var(--rule);
+            font-size: 12px; color: var(--sec); display: flex; align-items: center; padding: 0 16px; }
+  .status .gear { margin-left: auto; width: 12px; height: 12px; border: 1.6px solid var(--sec); border-radius: 50%; }
+  /* 查看内容 */
+  .bhead { position: absolute; left: 28px; right: 28px; top: 24px; display: flex; align-items: baseline; gap: 10px; }
+  .bhead b { font-size: 20px; color: var(--heading); }
+  .bhead span { font-size: 12px; color: var(--faint); }
+  .bhead .search { margin-left: auto; width: 170px; border-bottom: 1px solid var(--quote); font-size: 13px; color: var(--faint); padding-bottom: 3px; }
+  .btable { position: absolute; left: 16px; right: 16px; top: 60px; font-size: 13px; }
+  .bth { display: flex; height: 28px; align-items: center; border-bottom: 1px solid var(--rule); color: var(--text); padding: 0 12px; }
+  .btr { display: flex; height: 24px; align-items: center; border-bottom: 1px solid var(--rule); padding: 0 12px; position: relative; }
+  .btr .cb { width: 14px; height: 14px; border-radius: 3px; background: #e9e9e9; margin-right: 26px; flex: none; }
+  .btr .fi { width: 16px; margin-right: 8px; flex: none; }
+  .btr .nm { flex: 1; color: var(--text); }
+  .btr .nm.bad { color: #b34; font-family: Menlo, monospace; font-size: 12px; }
+  .btr .sz { width: 90px; color: var(--sec); }
+  .btr .glow { position: absolute; inset: 0; background: rgba(65,131,196,.12); opacity: 0; }
+  .bfoot { position: absolute; left: 28px; right: 28px; bottom: 0; height: 44px; display: flex; align-items: center; font-size: 13px; color: var(--sec); border-top: 1px solid var(--rule); }
+  .scan { position: absolute; left: 16px; right: 16px; height: 2px; background: var(--link); box-shadow: 0 0 14px 3px rgba(65,131,196,.45); opacity: 0; }
+  .junk { font-size: 14px; color: var(--sec); margin-top: 14px; display: flex; gap: 14px; align-items: center; }
+  .junk s { text-decoration-color: var(--link); text-decoration-thickness: 1.5px; }
+  .pill { position: absolute; font-size: 12px; color: #fff; background: var(--link); border-radius: 20px; padding: 4px 11px; opacity: 0; white-space: nowrap; }
+
+  /* 字幕：一次一行，深灰字带白色柔光，和软件正文一个调子 */
+  #sub { position: absolute; left: 0; right: 0; bottom: 46px; text-align: center; font-size: 46px; font-weight: 600; color: #222; letter-spacing: .03em;
+         text-shadow: 0 0 18px #fff, 0 0 30px #fff, 0 0 4px #fff; }
+  /* 结尾卡 */
+  #end { background: #fff; opacity: 0; display: flex; align-items: center; justify-content: center; }
+  #end .card { display: flex; align-items: center; gap: 70px; }
+  #end img { width: 300px; height: 300px; }
+  #end h1 { margin: 0; font-size: 120px; font-weight: 800; color: #222; letter-spacing: -.02em; line-height: 1; }
+  #end .rule { height: 2px; background: #eee; margin: 30px 0 28px; }
+  #end p { margin: 0; font-size: 46px; color: #333; }
+  #end .feat { margin-top: 22px; font-size: 28px; color: #999; letter-spacing: .04em; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three/build/three.module.js", "three/addons/": "./vendor/three/addons/" } }
+</script>
+</head>
+<body>
+<div id="stage"></div>
+
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="doc" viewBox="0 0 22 22"><path d="M5 1.5h8l4.5 4.5v14a.5.5 0 0 1-.5.5H5a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5z" fill="#fff" stroke="#c9c9c9"/><path d="M13 1.5V6h4.5" fill="none" stroke="#c9c9c9"/><path d="M10.5 4v9" stroke="#999" stroke-width="1.6" stroke-dasharray="1.5 1.2"/></symbol>
+  <symbol id="file" viewBox="0 0 16 16"><path d="M4 1.5h5.5l3 3v10H4z" fill="none" stroke="#aaa"/></symbol>
+  <symbol id="folder" viewBox="0 0 16 16"><path d="M1.5 3.5h5l1.5 1.5h6.5v8h-13z" fill="none" stroke="#4183c4" stroke-width="1.2"/></symbol>
+</svg>
+
+<div class="layer" id="ui">
+  <div id="win">
+    <div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+    <!-- 列表：密码那段（P）和解完那段（L）共用 -->
+    <div class="view" id="v-list">
+      <div class="doc">
+        <h1>解压</h1><div class="hr"></div>
+        <div class="hint">继续把压缩包拖进来，或者 <span class="link">选择文件</span>。</div>
+        <div id="rows"></div>
+      </div>
+      <div class="status">解压到：下载 &nbsp;⌄<span class="gear"></span></div>
+    </div>
+    <!-- 查看内容（G） -->
+    <div class="view" id="v-browse">
+      <div class="bhead"><b>设计素材.zip</b><span>zip</span><span class="search">⌕ 搜索</span></div>
+      <div class="btable">
+        <div class="bth"><span style="width:40px"></span><span style="flex:1">名称</span><span style="width:90px">大小</span></div>
+        <div id="brows"></div>
+      </div>
+      <div class="scan" id="scan"></div>
+      <div class="bfoot">5 个文件，解开共 4.8 MB；双击或空格键预览<span style="margin-left:auto">关闭</span><span class="link" style="margin-left:14px">勾选后可只解这几项</span></div>
+    </div>
+    <div class="pill" id="pill"></div>
+  </div>
+</div>
+
+<div class="layer"><div id="sub"></div></div>
+<div class="layer" id="flash"></div>
+<div class="layer" id="end">
+  <div class="card">
+    <img src="icon.png" id="end-icon">
+    <div>
+      <h1>Unpack</h1>
+      <div class="rule"></div>
+      <p>拖进来，就解开。</p>
+      <div class="feat">zip · 7z · rar · 分卷 · 加密包 · 乱码修复</div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/RoundedBoxGeometry.js';
+import { RoomEnvironment } from 'three/addons/RoomEnvironment.js';
+
+const W = 1920, H = 1080;
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const smooth = x => { x = clamp(x); return x * x * (3 - 2 * x); };
+const easeOut = x => 1 - Math.pow(1 - clamp(x), 3);
+const easeInOut = x => { x = clamp(x); return x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
+const lerp = (a, b, k) => a + (b - a) * k;
+const hash = (x, y = 0) => { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return s - Math.floor(s); };
+const $ = id => document.getElementById(id);
+
+// ---------------- 时间线：每段的长度 = 最短时长 和 旁白说完 + 0.6 秒 取大 ----------------
+const LINES = [
+  { key: 'a', scene: 'V', at: .35, text: '一个压缩包，拖进来，就解开。' },
+  { key: 'b', scene: 'T', at: .2, text: 'zip、7z、rar，分卷包、加密包，都能解。' },
+  { key: 'c', scene: 'P', at: .3, text: '加密包？存过的密码，它会自动帮你试。' },
+  { key: 'd', scene: 'G', at: .25, text: 'Windows 打包的中文乱码，也能自动修好。' },
+  { key: 'e', scene: 'L', at: .25, text: '解完放回原处，多余的垃圾文件，顺手清掉。' },
+  { key: 'f', scene: 'E', at: .45, text: 'Unpack。Mac 上解压，就该这么简单。' },
+];
+const VOICE = window.VOICE || LINES.map(l => ({ ...l, dur: l.text.length * 0.235 }));   // 没合成旁白时按每字 0.235 秒估
+const MIN = { V: 4.0, T: 4.0, P: 3.6, G: 3.8, L: 4.0, E: 4.2 };
+const ORDER = ['V', 'T', 'P', 'G', 'L', 'E'];
+const SC = {}; let acc = 0;
+for (const k of ORDER) {
+  const v = VOICE.find(x => x.scene === k);
+  const len = Math.max(MIN[k], v ? v.at + v.dur + 0.6 : 0);
+  SC[k] = { start: acc, len }; acc += len;
+}
+const END = acc;
+const local = (t, k) => t - SC[k].start;
+const sceneAt = t => ORDER.findLast(k => t >= SC[k].start) || 'V';
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1); renderer.setSize(W, H, false);
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.25;
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+$('stage').appendChild(renderer.domElement);
+const fit = () => { const k = Math.min(innerWidth / W, innerHeight / H); renderer.domElement.style.cssText = `width:${W * k}px;height:${H * k}px;margin:auto;position:absolute;inset:0`; };
+fit(); addEventListener('resize', fit);
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envTex = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const INK = 0x2e2e30, BLUE = 0x4183c4, PAPER = 0xf7f7f7;
+
+// =====================================================================
+// V：白色方块阵
+// =====================================================================
+const sV = new THREE.Scene();
+sV.background = new THREE.Color(0xffffff);
+sV.fog = new THREE.Fog(0xffffff, 38, 80);
+sV.environment = envTex; sV.environmentIntensity = 0.35;
+const camV = new THREE.PerspectiveCamera(28, W / H, 1, 300);
+sV.add(new THREE.HemisphereLight(0xffffff, 0xd8d8dc, 1.0));
+const sunV = new THREE.DirectionalLight(0xffffff, 2.2);
+sunV.position.set(-16, 30, 10); sunV.castShadow = true; sunV.shadow.mapSize.set(2048, 2048);
+Object.assign(sunV.shadow.camera, { left: -30, right: 30, top: 30, bottom: -30, near: 1, far: 90 });
+sunV.shadow.bias = -0.0004; sunV.shadow.radius = 4;
+sV.add(sunV);
+
+const N = 50, HALF = (N - 1) / 2;
+const cubeGeo = new RoundedBoxGeometry(0.9, 1, 0.9, 3, 0.14);
+const field = new THREE.InstancedMesh(cubeGeo, new THREE.MeshStandardMaterial({ roughness: 0.7 }), N * N);
+field.castShadow = field.receiveShadow = true; sV.add(field);
+const cells = [];
+for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+  const x = i - HALF, z = j - HALF, r = Math.hypot(x, z), a = Math.atan2(z, x);
+  const ringR = 8.6 + 0.35 * Math.sin(a * 3 + 1.3);
+  cells.push({ x, z, r, ring: Math.abs(r - ringR) < 0.6, core: r < 2.9 + 0.7 * hash(j, i), n: hash(i * 7.1, j * 3.3) });
+}
+const BURST = 1.45;
+const cPaper = new THREE.Color(PAPER), cInk = new THREE.Color(INK), cBlue = new THREE.Color(BLUE), cWhite = new THREE.Color(0xffffff), tmpC = new THREE.Color();
+const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), P = new THREE.Vector3(), S = new THREE.Vector3();
+const block = new THREE.InstancedMesh(cubeGeo, new THREE.MeshStandardMaterial({ roughness: 0.5 }), 64);
+block.castShadow = true; sV.add(block);
+const blockCubes = [];
+for (let a = 0; a < 4; a++) for (let b = 0; b < 4; b++) for (let c = 0; c < 4; c++) {
+  const home = new THREE.Vector3(a - 1.5, b + 0.5, c - 1.5);
+  const ang = Math.atan2(home.z, home.x) + (hash(a, b * 9 + c) - .5) * 1.4, rad = 8.6 + (hash(c, a) - .5);
+  // 拉链：正面中间一左一右交错的深色齿
+  blockCubes.push({ home, to: new THREE.Vector3(Math.cos(ang) * rad, 0.6, Math.sin(ang) * rad), spin: hash(a * 3, c * 5) * 6, seam: c === 3 && a === (b % 2 ? 2 : 1) });   // 拉链齿：一左一右交错
+}
+function frameV(s) {
+  const orbit = 0.7 + s * 0.06, push = easeInOut((s - 1.6) / 2.6);
+  const dist = lerp(44, 30, push);
+  camV.position.set(Math.cos(orbit) * dist, lerp(27, 30, push), Math.sin(orbit) * dist);
+  camV.lookAt(0, lerp(1.5, 0.3, push), 0);
+  const since = s - BURST;
+  for (let k = 0; k < cells.length; k++) {
+    const c = cells[k];
+    let h = 0.18 * Math.sin(c.x * .35 + s * .9) * Math.cos(c.z * .3 - s * .7) + 0.1 * c.n;
+    const col = tmpC.copy(cPaper).lerp(cWhite, c.n * 0.6);
+    if (since > 0) {
+      const front = since * 13, d = c.r - front;
+      h += 1.3 * Math.exp(-d * d / 3) * Math.exp(-since * .4);
+      const passed = clamp((front - c.r) / 2);
+      if (c.ring) { h += 0.9 * easeOut(passed) * (0.85 + 0.3 * c.n); col.lerp(cInk, smooth(passed)); }
+      if (c.core) { const up = easeOut((since - 0.3 - c.r * 0.07) / 1.0); h += up * (0.7 + 2.2 * c.n); col.lerp(cBlue, smooth(up * 1.5)); }
+    }
+    P.set(c.x, h - 0.5, c.z); Q.identity(); S.set(1, 1, 1);
+    field.setMatrixAt(k, M.compose(P, Q, S)); field.setColorAt(k, col);
+  }
+  field.instanceMatrix.needsUpdate = true; field.instanceColor.needsUpdate = true;
+  for (let k = 0; k < 64; k++) {
+    const b = blockCubes[k];
+    if (since < 0) {
+      const shake = smooth((s - 0.9) / 0.55) * 0.07 * Math.sin(s * 70 + k);
+      P.copy(b.home).multiplyScalar(0.94).add(new THREE.Vector3(shake, 0.7 + 0.15 * Math.sin(s * 1.6), -shake));
+      P.applyAxisAngle(new THREE.Vector3(0, 1, 0), 0.5 + s * 0.3); Q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), 0.5 + s * 0.3); S.set(1, 1, 1);
+    } else {
+      const u = clamp(since / (0.7 + 0.25 * hash(k))), e = easeOut(u);
+      P.lerpVectors(b.home, b.to, e); P.y += Math.sin(u * Math.PI) * (4.5 + 3 * hash(k, 2));
+      Q.setFromEuler(new THREE.Euler(e * b.spin, e * b.spin * .7, 0));
+      const sc = 1 - smooth((u - 0.85) / 0.15); S.set(sc, sc, sc);
+    }
+    block.setMatrixAt(k, M.compose(P, Q, S)); block.setColorAt(k, b.seam ? cInk : cWhite);
+  }
+  block.instanceMatrix.needsUpdate = true; block.instanceColor.needsUpdate = true;
+  renderer.render(sV, camV);
+}
+
+// =====================================================================
+// T：白色图标砖
+// =====================================================================
+const sT = new THREE.Scene();
+sT.background = new THREE.Color(0xffffff);
+sT.fog = new THREE.Fog(0xffffff, 16, 34);
+sT.environment = envTex; sT.environmentIntensity = 0.9;
+const camT = new THREE.PerspectiveCamera(30, W / H, 0.5, 200);
+const sunT = new THREE.DirectionalLight(0xffffff, 1.6);
+sunT.castShadow = true; sunT.shadow.mapSize.set(2048, 2048);
+Object.assign(sunT.shadow.camera, { left: -14, right: 14, top: 14, bottom: -14, near: 1, far: 60 });
+sunT.shadow.radius = 8; sunT.shadow.bias = -0.0005;
+sT.add(sunT, sunT.target, new THREE.HemisphereLight(0xffffff, 0xe6e6ea, 0.8));
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200).rotateX(-Math.PI / 2), new THREE.ShadowMaterial({ opacity: 0.12 }));
+ground.receiveShadow = true; sT.add(ground);
+
+// 砖面：白纸 + 深灰字 + 一条拉链缝；拉开后缝变成和 App 图标一样的深色口子
+function faceTex(label, sub, open) {
+  const c = document.createElement('canvas'); c.width = c.height = 512;
+  const x = c.getContext('2d');
+  x.fillStyle = '#fbfbfb'; x.beginPath(); x.roundRect(8, 8, 496, 496, 112); x.fill();
+  x.fillStyle = '#222'; x.font = '700 104px -apple-system, "PingFang SC", sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText(label, 256, 196);
+  x.fillStyle = '#999'; x.font = '500 40px -apple-system, "PingFang SC", sans-serif'; x.fillText(sub, 256, 282);
+  // 拉链：细缝 + 小齿
+  const cx = 256, top = 336, bot = 452;
+  x.fillStyle = '#c4c4c4';
+  for (let y = top + (open ? 46 : 0), k = 0; y < bot; y += 12, k++) x.fillRect(k % 2 ? cx : cx - 15, y, 15, 6);
+  if (open) {
+    x.fillStyle = '#1d1d1f'; x.beginPath(); x.moveTo(cx, top + 52);
+    x.quadraticCurveTo(cx - 34, top + 20, cx - 40, top - 6); x.lineTo(cx + 40, top - 6); x.quadraticCurveTo(cx + 34, top + 20, cx, top + 52); x.fill();
+  }
+  x.fillStyle = '#d9d9d9'; x.beginPath(); x.roundRect(cx - 12, (open ? top + 40 : top - 14), 24, 40, 10); x.fill();
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
+}
+const TILES = [['zip', '常见格式'], ['7z', '高压缩'], ['rar', 'RAR5 也行'], ['分卷', '.part1 / .001'], ['加密', '密码本']];
+const STEP = 3.0;
+const tileGeo = new RoundedBoxGeometry(2.4, 0.5, 2.4, 5, 0.46);
+const faceGeo = new THREE.PlaneGeometry(2.28, 2.28).rotateX(-Math.PI / 2);
+const tiles = TILES.map(([a, b], i) => {
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(tileGeo, new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.12 }));
+  base.castShadow = base.receiveShadow = true;
+  const closed = faceTex(a, b, false), opened = faceTex(a, b, true);
+  const face = new THREE.Mesh(faceGeo, new THREE.MeshPhysicalMaterial({ map: closed, transparent: true, roughness: 0.35, clearcoat: 1, clearcoatRoughness: 0.08 }));
+  face.position.y = 0.256; g.add(base, face);
+  g.position.set(i * STEP, 0.25, 0); sT.add(g);
+  const bits = [...Array(9)].map((_, k) => {
+    const m = new THREE.Mesh(new RoundedBoxGeometry(0.28, 0.28, 0.28, 2, 0.07),
+      new THREE.MeshStandardMaterial({ color: k % 3 === 0 ? INK : BLUE, roughness: 0.4 }));
+    m.castShadow = true; sT.add(m); return m;
+  });
+  return { g, face, closed, opened, bits, x: i * STEP };
+});
+const ACT = i => 0.55 + i * 0.6;   // 第 i 块砖被拉开的时刻（段内）
+function frameT(s) {
+  // 镜头：低机位从左往右平移，略微俯视
+  const k = easeInOut(s / SC.T.len);
+  const cx = lerp(0.2, STEP * 3.4, k);
+  camT.position.set(cx - 2.2, 8.2, 7.0); camT.lookAt(cx + 0.9, 0, -0.3);
+  sunT.position.set(cx - 6, 14, 9); sunT.target.position.set(cx, 0, 0);
+  tiles.forEach((tl, i) => {
+    const u = s - ACT(i);
+    tl.face.material.map = u > 0 ? tl.opened : tl.closed;
+    tl.g.position.y = 0.25 + (u > 0 ? -0.14 * Math.exp(-u * 6) * Math.cos(u * 18) : 0);
+    tl.bits.forEach((m, q) => {
+      const kk = u - 0.03; m.visible = kk > 0 && kk < 1.4;
+      if (!m.visible) return;
+      const a = q / 9 * Math.PI * 2 + hash(i, q), sp = 1.0 + 1.3 * hash(q, i);
+      m.position.set(tl.x + Math.cos(a) * sp * kk, 0.6 + (3.4 + 1.4 * hash(i * 3, q)) * kk - 7.5 * kk * kk, Math.sin(a) * sp * kk);
+      m.rotation.set(kk * 6 * hash(q, 1), kk * 5, 0);
+      m.scale.setScalar(1 - smooth((kk - 1.0) / 0.4));
+    });
+  });
+  renderer.render(sT, camT);
+}
+
+// =====================================================================
+// P / G / L：软件界面
+// =====================================================================
+const DOC = '<svg class="ic"><use href="#doc"/></svg>';
+function row(name, tag, status) { return `<div class="row">${DOC}<div style="flex:1"><div class="name">${name}${tag ? `<small>${tag}</small>` : ''}</div>${status}</div></div>`; }
+const done = (what) => `<div class="st"><span class="ck">✓</span>已放到「下载」里：${what}<span class="dot">·</span><span class="link">在访达中显示</span><span class="dot">·</span><span class="link">查看内容</span></div>`;
+
+// 查看内容里的名字：先是乱码（Windows GBK 被当成西文读出来的样子），扫描线扫过一行就变回中文
+const NAMES = [
+  ['folder', '设计素材', 'Éè¼ÆËØ²Ä', ''],
+  ['file', '设计素材/海报-最终版.psd', 'Éè¼ÆËØ²Ä/º£±¨-×îÖÕ°æ.psd', '2.9 MB'],
+  ['file', '设计素材/门店菜单-定稿.pdf', 'Éè¼ÆËØ²Ä/ÃÅµê²Ëµ¥-¶¨¸å.pdf', '1.2 MB'],
+  ['folder', '设计素材/产品图', 'Éè¼ÆËØ²Ä/²úÆ·Í¼', ''],
+  ['file', '设计素材/产品图/精华液-正面.jpg', 'Éè¼ÆËØ²Ä/²úÆ·Í¼/¾«»ªÒº-ÕýÃæ.jpg', '386 KB'],
+  ['file', '设计素材/产品图/精华液-侧面.jpg', 'Éè¼ÆËØ²Ä/²úÆ·Í¼/¾«»ªÒº-²àÃæ.jpg', '402 KB'],
+  ['file', '设计素材/字体说明.txt', 'Éè¼ÆËØ²Ä/×ÖÌåËµÃ÷.txt', '2 KB'],
+];
+$('brows').innerHTML = NAMES.map(([ic, , bad, sz], i) =>
+  `<div class="btr"><span class="cb"></span><svg class="fi" height="16"><use href="#${ic}"/></svg><span class="nm bad" id="nm${i}">${bad}</span><span class="sz">${sz}</span><span class="glow" id="gl${i}"></span></div>`).join('');
+
+let lastUI = '';
+function frameUI(t) {
+  const k = sceneAt(t);
+  const ui = $('ui'), win = $('win');
+  const inUI = ['P', 'G', 'L'].includes(k) || (k === 'E' && local(t, 'E') < 0.8);
+  ui.style.opacity = k === 'E' ? 1 - smooth(local(t, 'E') / 0.7) : (['P', 'G', 'L'].includes(k) ? 1 : 0);
+  if (!inUI) return;
+  const sP = local(t, 'P'), sG = local(t, 'G'), sL = local(t, 'L');
+  $('v-list').style.opacity = (k === 'P' || k === 'L' || k === 'E') ? 1 : 0;
+  $('v-browse').style.opacity = k === 'G' ? 1 : 0;
+  // 镜头：窗口从微微后仰立起来，然后推近到要讲的那一块
+  let rx = 0, sc = 1, ty = 0, tx = 0;
+  if (k === 'P') {
+    const enter = easeOut(sP / 0.9);
+    rx = lerp(16, 0, enter); sc = lerp(0.92, 1, enter);
+    const zoom = easeInOut((sP - 0.9) / 1.1);
+    sc *= lerp(1, 1.14, zoom); ty = lerp(0, -10, zoom); tx = lerp(0, 40, zoom);
+  } else if (k === 'G') {
+    sc = lerp(1.0, 1.06, sG / SC.G.len); ty = lerp(6, -6, sG / SC.G.len);
+  } else {
+    const s = k === 'L' ? sL : SC.L.len + local(t, 'E');
+    sc = lerp(1.0, 1.06, s / SC.L.len); rx = lerp(0, -4, s / SC.L.len);
+  }
+  win.style.transform = `translate(${tx}px, ${ty}px) rotateX(${rx}deg) scale(${sc})`;
+
+  const pill = $('pill');
+  pill.style.opacity = 0;
+  if (k === 'P') {
+    // 密码本自动试：密码框里一串串点快速换，进度线走完 → 打勾
+    const ok = sP > 2.6;
+    const tries = Math.min(7, Math.floor(Math.max(0, sP - 0.9) / 0.24));
+    const pwRow = ok ? done('客户合同')
+      : `<div class="st">这个包加了密码，正在用密码本里的密码自动试…</div>
+         <div class="pw"><span class="field">${'●'.repeat(4 + (tries * 3) % 5)}</span><span style="color:var(--sec)">第 ${tries + 1} 个</span></div>
+         <div class="bar2" style="width:300px"><i style="width:${Math.min(100, (sP - 0.9) / 1.7 * 100)}%"></i></div>`;
+    const html = row('2026品牌手册.7z', '', done('2026品牌手册')) + row('客户合同.zip', '', pwRow) + row('门店培训视频.7z.001', '3 卷', `<div class="st">排队中</div>`);
+    if (html !== lastUI) { $('rows').innerHTML = html; lastUI = html; }
+    if (ok) { pill.textContent = '密码本命中 ✓'; pill.style.left = '250px'; pill.style.top = '226px'; pill.style.opacity = clamp((sP - 2.6) / 0.3); }
+  } else if (k === 'L' || k === 'E') {
+    const s = k === 'L' ? sL : SC.L.len;
+    const items = [['门店培训视频.7z.001', '3 卷', '培训视频.mp4', 0.3], ['设计素材.zip', '', '设计素材', 0.9], ['年终总结.tar.gz', '', '年终总结', 1.5]];
+    let html = '';
+    for (const [n, tag, out, at] of items) {
+      const p = clamp((s - at) / 0.9);
+      html += row(n, tag, p >= 1 ? done(out)
+        : p <= 0 ? `<div class="st">排队中</div>`
+        : `<div class="st">解压 ${Math.round(p * 100)}% · ${(380 + 90 * Math.sin(at * 9)).toFixed(0)} MB/s<span class="dot">·</span><span class="link">取消</span></div><div class="bar2"><i style="width:${p * 100}%"></i></div>`);
+    }
+    // 垃圾文件：依次划掉、淡出
+    const j = [['__MACOSX', 2.5], ['.DS_Store', 2.75], ['Thumbs.db', 3.0]].map(([n, at]) => {
+      const u = clamp((s - at) / 0.35);
+      return `<span style="opacity:${1 - 0.6 * u}">${u > 0 ? `<s>${n}</s>` : n}</span>`;
+    }).join('');
+    html += `<div class="junk" style="opacity:${clamp((s - 2.2) / 0.3)}">已自动清掉：${j}</div>`;
+    if (html !== lastUI) { $('rows').innerHTML = html; lastUI = html; }
+  }
+  if (k === 'G') {
+    // 扫描线从上往下，扫过一行就把乱码换成中文，那一行闪一下蓝
+    const y0 = 88, y1 = 88 + NAMES.length * 25;
+    const p = clamp((sG - 0.8) / 2.0), y = lerp(y0, y1, easeInOut(p));
+    $('scan').style.top = y + 'px'; $('scan').style.opacity = p > 0 && p < 1 ? 1 : 0;
+    NAMES.forEach(([, good, bad], i) => {
+      const rowY = y0 + i * 25 + 12, fixed = p > 0 && y > rowY;
+      const el = $('nm' + i);
+      el.textContent = fixed ? good : bad; el.className = 'nm' + (fixed ? '' : ' bad');
+      const since = fixed ? (y - rowY) / (y1 - y0) * 2.0 : -1;
+      $('gl' + i).style.opacity = fixed ? clamp(1 - since / 0.5) : 0;
+    });
+  }
+}
+
+// =====================================================================
+// 字幕、转场、结尾
+// =====================================================================
+// 字幕一次一行：按逗号、句号拆开，按字数分配这句话的时长
+const SUBS = [];
+for (const v of VOICE) {
+  const parts = v.text.split(/(?<=[，。？、])/).reduce((a, p) => { if (a.length && (a[a.length - 1] + p).replace(/[，。？、]/g, '').length <= 9) a[a.length - 1] += p; else a.push(p); return a; }, []);
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  let t0 = SC[v.scene].start + v.at;
+  for (const p of parts) { const d = v.dur * p.length / total; SUBS.push({ a: t0, b: t0 + d, text: p.replace(/[，。、]$/, '') }); t0 += d; }
+}
+function overlay(t) {
+  const sub = SUBS.find(s => t >= s.a && t < s.b + 0.15);
+  $('sub').textContent = sub && sceneAt(t) !== 'E' ? sub.text : '';
+  // 转场：V→T、T→P 两次白闪
+  const f = (b) => clamp(1 - Math.abs(t - b) / 0.28);
+  $('flash').style.opacity = Math.max(f(SC.T.start), f(SC.P.start) * 0.9);
+  const e = local(t, 'E');
+  $('end').style.opacity = smooth((e - 0.2) / 0.7);
+  $('end-icon').style.transform = `scale(${lerp(0.84, 1, easeOut((e - 0.2) / 1.1))})`;
+}
+
+function frame(t) {
+  const k = sceneAt(t);
+  if (k === 'V') frameV(local(t, 'V'));
+  else if (k === 'T') frameT(local(t, 'T'));
+  renderer.domElement.style.visibility = (k === 'V' || k === 'T') ? 'visible' : 'hidden';
+  frameUI(t);
+  overlay(t);
+}
+
+// 音效、旁白时间表（交给 audio.mjs / record.mjs）
+function events() {
+  const ev = [];
+  ev.push({ t: BURST - 0.5, type: 'riser' }, { t: BURST, type: 'boom' });
+  ev.push({ t: SC.T.start - 0.25, type: 'whoosh' });
+  TILES.forEach((_, i) => ev.push({ t: SC.T.start + ACT(i), type: 'pop' }));
+  ev.push({ t: SC.P.start - 0.25, type: 'whoosh' });
+  for (let i = 0; i < 7; i++) ev.push({ t: SC.P.start + 0.9 + i * 0.24, type: 'tick' });
+  ev.push({ t: SC.P.start + 2.6, type: 'ok' });
+  ev.push({ t: SC.G.start, type: 'swipe' });
+  NAMES.forEach((_, i) => ev.push({ t: SC.G.start + 0.8 + 2.0 * (i + .5) / NAMES.length, type: 'tick' }));
+  [0.3, 0.9, 1.5].forEach(a => ev.push({ t: SC.L.start + a + 0.9, type: 'ok' }));
+  ev.push({ t: SC.E.start + 0.25, type: 'chime' });
+  return ev;
+}
+const voiceTrack = () => VOICE.map(v => ({ key: v.key, at: SC[v.scene].start + v.at, dur: v.dur }));
+window.PROMO = { END, frame, events, voiceTrack, drop: BURST, scenes: SC, hasVoice: !!window.VOICE };
+if (!new URLSearchParams(location.search).has('rec')) {
+  const t0 = performance.now();
+  const loop = () => { frame(((performance.now() - t0) / 1000) % END); requestAnimationFrame(loop); };
+  loop();
+}
+</script>
+</body>
+</html>

@@ -6,11 +6,11 @@
 	<dict>
 		<key>Resources/7zz</key>
 		<data>
-		cWxQHRmra98ywJ383fTKk5DMVto=
+		rVAlHT+5BiBw0KcTCRZLXDCVBVw=
 		</data>
 		<key>Resources/AppIcon.icns</key>
 		<data>
-		SNAx4vxbWe18XUVYgwPp8NwmVuo=
+		RXf935oQ9VNchXFlQqe0nsSClBw=
 		</data>
 		<key>Resources/en.lproj/InfoPlist.strings</key>
 		<dict>
@@ -32,7 +32,7 @@
 		</dict>
 		<key>Resources/unar</key>
 		<data>
-		0KDFS/hQJgcJeOfjH5Tkyq1bFn0=
+		gggu72Dks+NUZHEKj4X8hPdM7dM=
 		</data>
 		<key>Resources/zh-Hans.lproj/InfoPlist.strings</key>
 		<dict>
@@ -59,14 +59,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			rRxPCQ5G58Vd96JLsJcFBPj3wYsNZRB5RZSXVhC1TrU=
+			flU49wFdWgBP+K35Prcd6RZT+AJK3fZy7inJ0TXQRDo=
 			</data>
 		</dict>
 		<key>Resources/AppIcon.icns</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			/t60DsKV54T702qnplWVwSoqZK+3teM4EJYuHmuRJOM=
+			5d4+hFejtrMyioai3ouiELuYr20KxL5Kh+6Oo4KiUsk=
 			</data>
 		</dict>
 		<key>Resources/en.lproj/InfoPlist.strings</key>
@@ -91,7 +91,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			6JHjc/cLDpNdATHGd7LcAe++WWBcwHy5zxYfao/OYWM=
+			T4NqkRCZYzu1DPLA3V+rgtu4E0LrswifTMBsyT/PVxE=
 			</data>
 		</dict>
 		<key>Resources/zh-Hans.lproj/InfoPlist.strings</key>

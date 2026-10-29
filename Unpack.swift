@@ -799,7 +799,8 @@ struct UnpackApp: App {
         Window(appName, id: "main") {
             ContentView().frame(minWidth: 520, minHeight: 440)
         }
-        .defaultSize(width: 560, height: 520)
+        .windowStyle(.hiddenTitleBar)   // 像 Typora：不要标题栏，整窗就是一页纸
+        .defaultSize(width: 640, height: 560)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button(L("打开…", "Open…")) { pickFiles() }.keyboardShortcut("o")
@@ -845,37 +846,99 @@ func selfTest(_ list: String) {
     exit(0)
 }
 
-// ---- 界面 ----
+// ---- 界面：仿 Typora（GitHub 主题）——白纸页面、正文排版、文字链接代替按钮、底部细状态栏；深色模式用它 Night 主题的配色 ----
+enum Theme {
+    static func hex(_ v: UInt32) -> NSColor {
+        NSColor(srgbRed: CGFloat(v >> 16 & 0xFF) / 255, green: CGFloat(v >> 8 & 0xFF) / 255, blue: CGFloat(v & 0xFF) / 255, alpha: 1)
+    }
+    static func dyn(_ light: UInt32, _ dark: UInt32) -> Color {
+        Color(nsColor: NSColor(name: nil) { a in a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? hex(dark) : hex(light) })
+    }
+    static let bg = dyn(0xFFFFFF, 0x363B40)
+    static let text = dyn(0x333333, 0xB8BFC6)
+    static let heading = dyn(0x222222, 0xE6E6E6)
+    static let secondary = dyn(0x777777, 0x8B939B)
+    static let faint = dyn(0xAAAAAA, 0x666D74)
+    static let rule = dyn(0xEEEEEE, 0x474D54)
+    static let quoteBar = dyn(0xDFE2E5, 0x575E66)
+    static let link = dyn(0x4183C4, 0x7FB2E8)
+    static let error = dyn(0xC7254E, 0xE8899A)
+    static let ok = dyn(0x4E9A5B, 0x8CC796)
+    static let bar = dyn(0xF8F8F8, 0x2E3236)
+}
+
+/// 细分割线
+struct Rule: View {
+    var body: some View { Rectangle().fill(Theme.rule).frame(height: 1) }
+}
+
+/// 蓝色文字链接（悬停加下划线、变手形）
+struct LinkButton: View {
+    let title: String
+    var color = Theme.link
+    let action: () -> Void
+    @State private var hover = false
+    @Environment(\.isEnabled) private var enabled
+    var body: some View {
+        Button(action: action) { Text(title).underline(hover && enabled) }
+            .buttonStyle(.plain)
+            .foregroundStyle(enabled ? color : Theme.faint)
+            .onHover { h in
+                hover = h
+                (h && enabled ? NSCursor.pointingHand : NSCursor.arrow).set()
+            }
+    }
+}
+
+/// 链接之间的「·」
+struct Dot: View { var body: some View { Text("·").foregroundStyle(Theme.faint) } }
+
+/// 正文里能点的 [文字](unpack://open) 链接
+func para(_ md: String) -> Text {
+    var s = (try? AttributedString(markdown: md)) ?? AttributedString(md)
+    for run in s.runs where run.link != nil { s[run.range].foregroundColor = Theme.link }
+    return Text(s)
+}
+
 struct ContentView: View {
     @ObservedObject var queue = JobQueue.shared
     @State private var targeted = false
     @State private var browsing: Job?
 
     var body: some View {
-        VStack(spacing: 0) {
-            if queue.jobs.isEmpty {
-                DropHero(targeted: targeted).padding(20)
-            } else {
+        ZStack {
+            Theme.bg.ignoresSafeArea()
+            VStack(spacing: 0) {
                 ScrollView {
-                    LazyVStack(spacing: 10) {
-                        ForEach(queue.jobs) { JobRow(job: $0, browse: { browsing = $0 }) }
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(appName).font(.system(size: 30, weight: .bold)).foregroundStyle(Theme.heading)
+                            .padding(.bottom, 10)
+                        Rule().padding(.bottom, 18)
+                        if queue.jobs.isEmpty {
+                            Intro()
+                        } else {
+                            para(L("继续把压缩包拖进来，或者 [选择文件](unpack://open)。", "Drop more archives, or [choose files](unpack://open)."))
+                                .font(.system(size: 14)).foregroundStyle(Theme.secondary).padding(.bottom, 6)
+                            ForEach(queue.jobs) { JobRow(job: $0, browse: { browsing = $0 }) }
+                        }
                     }
-                    .padding(16)
+                    .frame(maxWidth: 600, alignment: .leading)
+                    .padding(.horizontal, 44).padding(.top, 46).padding(.bottom, 28)
+                    .frame(maxWidth: .infinity)
                 }
-                .overlay {
-                    if targeted {
-                        RoundedRectangle(cornerRadius: 14).strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [10, 6]))
-                            .background(Color.accentColor.opacity(0.08).clipShape(RoundedRectangle(cornerRadius: 14)))
-                            .padding(8).allowsHitTesting(false)
-                    }
-                }
+                .scrollContentBackground(.hidden)
+                StatusBar()
             }
-            Divider()
-            BottomBar()
+            if targeted { DropOverlay().transition(.opacity) }
         }
+        .foregroundStyle(Theme.text)
+        .environment(\.openURL, OpenURLAction { url in
+            if url.scheme == "unpack" { pickFiles(); return .handled }
+            return .systemAction
+        })
         .dropDestination(for: URL.self) { urls, _ in
             queue.add(urls); return !urls.isEmpty
-        } isTargeted: { t in withAnimation(.spring(duration: 0.3)) { targeted = t } }
+        } isTargeted: { t in withAnimation(.easeOut(duration: 0.15)) { targeted = t } }
         .sheet(item: $browsing) { BrowserView(job: $0) }
         .onChange(of: queue.jobs.count) { _, n in   // 自测截图用：UNPACK_BROWSE=1 时自动打开第一个包的内容
             if n > 0, browsing == nil, ProcessInfo.processInfo.environment["UNPACK_BROWSE"] != nil { browsing = queue.jobs.first }
@@ -883,50 +946,44 @@ struct ContentView: View {
     }
 }
 
-struct DropHero: View {
-    let targeted: Bool
-    @State private var float = false
+/// 空窗口时的说明，排成一页文档的样子
+struct Intro: View {
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 22)
-                .fill(LinearGradient(colors: [Color.accentColor.opacity(targeted ? 0.22 : 0.08), Color.purple.opacity(targeted ? 0.18 : 0.05)],
-                                     startPoint: .topLeading, endPoint: .bottomTrailing))
-            RoundedRectangle(cornerRadius: 22)
-                .strokeBorder(targeted ? Color.accentColor : Color.secondary.opacity(0.35), style: StrokeStyle(lineWidth: targeted ? 3 : 1.5, dash: [9, 7]))
-            VStack(spacing: 16) {
-                Image(systemName: targeted ? "arrow.down.circle.fill" : "shippingbox.and.arrow.backward")
-                    .font(.system(size: 64, weight: .light))
-                    .foregroundStyle(LinearGradient(colors: [.accentColor, .purple], startPoint: .top, endPoint: .bottom))
-                    .symbolEffect(.bounce, value: targeted)
-                    .offset(y: float ? -4 : 4)
-                    .animation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true), value: float)
-                Text(L("把压缩包拖到这里", "Drop archives here")).font(.title2.weight(.semibold))
-                Text("zip · 7z · rar · tar · gz · xz · zst · iso · cab · " + L("分卷", "split volumes") + " …")
-                    .font(.callout).foregroundStyle(.secondary)
-                HStack(spacing: 14) {
-                    Feature(icon: "key.fill", text: L("密码本自动试", "Auto-try saved passwords"))
-                    Feature(icon: "character.book.closed.fill", text: L("中文乱码自动修", "Fixes garbled names"))
-                    Feature(icon: "square.stack.3d.up.fill", text: L("分卷、tar.gz 一次解完", "Split & tar.gz in one go"))
+        VStack(alignment: .leading, spacing: 16) {
+            para(L("把压缩包拖进这个窗口的任意位置就会解开，也可以 [选择文件](unpack://open)。",
+                   "Drop an archive anywhere in this window to extract it, or [choose a file](unpack://open)."))
+                .font(.system(size: 16)).lineSpacing(5)
+            Text(L("支持 zip、7z、rar、tar、gz、bz2、xz、zst、iso、cab，以及分卷压缩包。",
+                   "Works with zip, 7z, rar, tar, gz, bz2, xz, zst, iso, cab and split archives."))
+                .font(.system(size: 15)).foregroundStyle(Theme.secondary).lineSpacing(5)
+            HStack(spacing: 14) {
+                Rectangle().fill(Theme.quoteBar).frame(width: 4)
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(L("加密的包，先用你存过的密码自动试。", "Encrypted archives are tried with your saved passwords first."))
+                    Text(L("Windows 上打的包，中文文件名自动修好乱码。", "Garbled filenames from Windows zips are fixed automatically."))
+                    Text(L("分卷包拖哪一卷都行；.tar.gz 一步解到底。", "Drop any part of a split archive; .tar.gz unpacks in one step."))
                 }
-                .padding(.top, 4)
-                Button(L("选择文件…", "Choose Files…")) { pickFiles() }
-                    .controlSize(.large).buttonStyle(.borderedProminent).padding(.top, 6)
-                Text(L("拖进文件夹或普通文件，就压成 zip", "Drop folders or files to make a zip"))
-                    .font(.caption).foregroundStyle(.tertiary)
+                .font(.system(size: 15)).foregroundStyle(Theme.secondary).padding(.vertical, 2)
             }
-            .padding(24)
+            .fixedSize(horizontal: false, vertical: true)
+            Text(L("拖进文件夹或普通文件，则压缩成 zip。", "Drop folders or plain files to make a zip."))
+                .font(.system(size: 13)).foregroundStyle(Theme.faint)
         }
-        .scaleEffect(targeted ? 1.02 : 1)
-        .onAppear { float = true }
     }
 }
 
-struct Feature: View {
-    let icon: String, text: String
+struct DropOverlay: View {
     var body: some View {
-        Label(text, systemImage: icon).font(.caption).foregroundStyle(.secondary).fixedSize()
-            .padding(.horizontal, 9).padding(.vertical, 5)
-            .background(.quaternary.opacity(0.6), in: Capsule())
+        ZStack {
+            Theme.bg.opacity(0.94).ignoresSafeArea()
+            RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.link.opacity(0.5), lineWidth: 2).padding(14)
+            VStack(spacing: 8) {
+                Text(L("松手即可", "Release to unpack")).font(.system(size: 26, weight: .bold)).foregroundStyle(Theme.heading)
+                Text(L("压缩包会被解开，文件夹会被压成 zip", "Archives are extracted, folders are zipped"))
+                    .font(.system(size: 14)).foregroundStyle(Theme.secondary)
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -935,70 +992,88 @@ struct JobRow: View {
     let browse: (Job) -> Void
     @State private var pw = ""
     @State private var shake = 0
+    @State private var hover = false
     @AppStorage(Pref.rememberPw) private var remember = true
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(nsImage: NSWorkspace.shared.icon(forFile: job.sources[0].path))
-                .resizable().frame(width: 40, height: 40)
-                .overlay(alignment: .bottomTrailing) { badge }
+                .resizable().frame(width: 22, height: 22).padding(.top, 1)
             VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Text(job.title).font(.headline).lineLimit(1).truncationMode(.middle)
-                    if job.volumeCount > 1 {
-                        Text(L("\(job.volumeCount) 卷", "\(job.volumeCount) parts")).font(.caption2.weight(.medium))
-                            .padding(.horizontal, 6).padding(.vertical, 1).background(.quaternary, in: Capsule())
-                    }
-                    if job.kind == .compress {
-                        Text(L("压缩成 zip", "→ zip")).font(.caption2.weight(.medium))
-                            .padding(.horizontal, 6).padding(.vertical, 1).background(.quaternary, in: Capsule())
+                HStack(spacing: 8) {
+                    Text(job.title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.heading)
+                        .lineLimit(1).truncationMode(.middle)
+                    if job.volumeCount > 1 { Text(L("\(job.volumeCount) 卷", "\(job.volumeCount) parts")).foregroundStyle(Theme.faint) }
+                    if job.kind == .compress { Text(L("→ zip", "→ zip")).foregroundStyle(Theme.faint) }
+                    Spacer(minLength: 0)
+                    if hover && job.state != .working {
+                        LinkButton(title: L("移除", "Remove"), color: Theme.faint) { withAnimation { JobQueue.shared.remove(job) } }
+                            .font(.system(size: 12))
                     }
                 }
-                status
+                .font(.system(size: 13))
+                status.font(.system(size: 13))
+                if job.state == .working { ThinProgress(value: job.fraction).padding(.top, 2) }
             }
-            Spacer(minLength: 0)
-            buttons
         }
-        .padding(12)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator.opacity(0.5)))
-    }
-
-    @ViewBuilder var badge: some View {
-        switch job.state {
-        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.white, .green).font(.system(size: 16))
-        case .failed: Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.white, .red).font(.system(size: 16))
-        case .needPassword: Image(systemName: "lock.circle.fill").foregroundStyle(.white, .orange).font(.system(size: 16))
-        default: EmptyView()
-        }
+        .padding(.vertical, 14)
+        .overlay(alignment: .bottom) { Rule() }
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
     }
 
     @ViewBuilder var status: some View {
         switch job.state {
         case .waiting:
-            Text(L("排队中", "Waiting")).font(.callout).foregroundStyle(.secondary)
+            Text(L("排队中", "Waiting")).foregroundStyle(Theme.secondary)
         case .working:
-            ProgressView(value: job.fraction).progressViewStyle(.linear).animation(.linear(duration: 0.2), value: job.fraction)
-            Text(job.detail).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text(job.detail).monospacedDigit().foregroundStyle(Theme.secondary)
+                Dot()
+                LinkButton(title: L("取消", "Cancel")) { JobQueue.shared.remove(job) }
+            }
         case .needPassword:
-            Text(job.wrongPassword ? L("密码不对，再试一次", "Wrong password, try again")
-                 : L("这个压缩包加了密码，密码本里的都试过了", "This archive is encrypted; saved passwords didn't work"))
-                .font(.callout).foregroundStyle(job.wrongPassword ? .red : .orange)
-            HStack(spacing: 8) {
-                SecureField(L("输入密码", "Password"), text: $pw)
-                    .textFieldStyle(.roundedBorder).frame(maxWidth: 220)
-                    .onSubmit(submit)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(job.wrongPassword ? L("密码不对，再试一次。", "Wrong password, try again.")
+                     : L("这个包加了密码，存过的密码都不对。", "This archive is encrypted and no saved password fits."))
+                    .foregroundStyle(job.wrongPassword ? Theme.error : Theme.secondary)
+                HStack(spacing: 12) {
+                    VStack(spacing: 3) {
+                        SecureField(L("输入密码", "Password"), text: $pw)
+                            .textFieldStyle(.plain).font(.system(size: 14)).onSubmit(submit)
+                        Rectangle().fill(Theme.quoteBar).frame(height: 1)
+                    }
+                    .frame(width: 200)
                     .modifier(Shake(amount: CGFloat(shake)))
-                Toggle(L("记住", "Remember"), isOn: $remember).toggleStyle(.checkbox).font(.callout)
-                Button(L("解开", "Unlock"), action: submit).buttonStyle(.borderedProminent).disabled(pw.isEmpty)
+                    Toggle(L("记住", "Remember"), isOn: $remember).toggleStyle(.checkbox).foregroundStyle(Theme.secondary)
+                    LinkButton(title: L("解开", "Unlock"), action: submit).disabled(pw.isEmpty)
+                }
             }
             .onChange(of: job.wrongPassword) { _, wrong in if wrong { withAnimation(.default) { shake += 1 } } }
         case .done:
-            Button { if let r = job.result { NSWorkspace.shared.activateFileViewerSelecting([r]) } } label: {
-                Text(job.detail).font(.callout).foregroundStyle(.green).lineLimit(1).truncationMode(.middle)
-            }.buttonStyle(.plain)
+            HStack(spacing: 6) {
+                Text("✓").foregroundStyle(Theme.ok)
+                Text(job.detail).foregroundStyle(Theme.secondary).lineLimit(1).truncationMode(.middle)
+                Dot()
+                LinkButton(title: L("在访达中显示", "Show in Finder")) {
+                    if let r = job.result { NSWorkspace.shared.activateFileViewerSelecting([r]) }
+                }.fixedSize()
+                if job.kind == .extract, job.selection == nil {
+                    Dot()
+                    LinkButton(title: L("查看内容", "Contents")) { browse(job) }.fixedSize()
+                }
+            }
         case .failed:
-            Text(job.detail).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(job.detail).foregroundStyle(Theme.error).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    LinkButton(title: L("重试", "Retry")) { JobQueue.shared.retry(job, password: job.password) }
+                    if job.kind == .extract, job.selection == nil {
+                        Dot()
+                        LinkButton(title: L("查看内容", "Contents")) { browse(job) }
+                    }
+                }
+            }
         }
     }
 
@@ -1007,30 +1082,20 @@ struct JobRow: View {
         JobQueue.shared.retry(job, password: pw)
         pw = ""
     }
-
-    @ViewBuilder var buttons: some View {
-        HStack(spacing: 4) {
-            if job.kind == .extract, job.state != .working, job.selection == nil {
-                IconButton(icon: "list.bullet.rectangle", help: L("查看内容 / 只解其中几个", "Browse contents")) { browse(job) }
-            }
-            if job.state == .done, let r = job.result {
-                IconButton(icon: "magnifyingglass", help: L("在访达中显示", "Show in Finder")) { NSWorkspace.shared.activateFileViewerSelecting([r]) }
-            }
-            if job.state == .failed {
-                IconButton(icon: "arrow.clockwise", help: L("重试", "Retry")) { JobQueue.shared.retry(job, password: job.password) }
-            }
-            IconButton(icon: job.state == .working ? "stop.circle" : "xmark", help: job.state == .working ? L("取消", "Cancel") : L("移除", "Remove")) {
-                JobQueue.shared.remove(job)
-            }
-        }
-    }
 }
 
-struct IconButton: View {
-    let icon: String, help: String, action: () -> Void
+/// 2 像素的细进度线
+struct ThinProgress: View {
+    let value: Double
     var body: some View {
-        Button(action: action) { Image(systemName: icon).frame(width: 26, height: 26).contentShape(Rectangle()) }
-            .buttonStyle(.borderless).help(help)
+        GeometryReader { g in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.rule)
+                Capsule().fill(Theme.link).frame(width: max(2, g.size.width * value))
+            }
+        }
+        .frame(height: 2)
+        .animation(.linear(duration: 0.25), value: value)
     }
 }
 
@@ -1042,39 +1107,43 @@ struct Shake: GeometryEffect {
     }
 }
 
-struct BottomBar: View {
+/// 底部状态栏（像 Typora 窗口底下那条）：解压到哪、清除已完成、设置
+struct StatusBar: View {
     @ObservedObject var queue = JobQueue.shared
     @AppStorage(Pref.dest) private var dest = ""
     @State private var showSettings = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            Text(L("解压到", "Extract to")).foregroundStyle(.secondary)
-            Menu {
-                Button(L("压缩包所在的文件夹", "Next to the archive")) { dest = "" }
-                Button(L("下载", "Downloads")) { dest = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0].path }
-                Button(L("桌面", "Desktop")) { dest = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask)[0].path }
-                Divider()
-                Button(L("其他文件夹…", "Other…")) {
-                    let p = NSOpenPanel()
-                    p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true
-                    if p.runModal() == .OK, let u = p.url { dest = u.path }
+        VStack(spacing: 0) {
+            Rule()
+            HStack(spacing: 14) {
+                Menu {
+                    Button(L("压缩包所在的文件夹", "Next to the archive")) { dest = "" }
+                    Button(L("下载", "Downloads")) { dest = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0].path }
+                    Button(L("桌面", "Desktop")) { dest = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask)[0].path }
+                    Divider()
+                    Button(L("其他文件夹…", "Other…")) {
+                        let p = NSOpenPanel()
+                        p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true
+                        if p.runModal() == .OK, let u = p.url { dest = u.path }
+                    }
+                } label: {
+                    Text(L("解压到：", "Extract to: ") + (dest.isEmpty ? L("压缩包旁边", "next to the archive") : (dest as NSString).lastPathComponent) + "  ⌄")
+                        .foregroundStyle(Theme.secondary)
                 }
-            } label: {
-                Label(dest.isEmpty ? L("压缩包所在的文件夹", "Next to the archive") : (dest as NSString).lastPathComponent,
-                      systemImage: "folder")
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                Spacer()
+                if queue.jobs.contains(where: { $0.state == .done }) {
+                    LinkButton(title: L("清除已完成", "Clear finished"), color: Theme.secondary) { withAnimation { queue.clearFinished() } }
+                }
+                Button { showSettings.toggle() } label: { Image(systemName: "gearshape").foregroundStyle(Theme.secondary) }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $showSettings, arrowEdge: .bottom) { SettingsView() }
             }
-            .fixedSize()
-            Spacer()
-            if queue.jobs.contains(where: { $0.state == .done }) {
-                Button(L("清除已完成", "Clear Finished")) { withAnimation { queue.clearFinished() } }.buttonStyle(.borderless)
-            }
-            Button { showSettings.toggle() } label: { Image(systemName: "gearshape") }
-                .buttonStyle(.borderless)
-                .popover(isPresented: $showSettings, arrowEdge: .bottom) { SettingsView() }
+            .font(.system(size: 12))
+            .padding(.horizontal, 16).frame(height: 30)
         }
-        .padding(.horizontal, 16).padding(.vertical, 10)
-        .background(.bar)
+        .background(Theme.bar)
     }
 }
 
@@ -1089,22 +1158,25 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Text(L("设置", "Settings")).font(.system(size: 17, weight: .bold)).foregroundStyle(Theme.heading)
+            Rule()
             Toggle(L("去掉 __MACOSX、.DS_Store、Thumbs.db 等垃圾", "Remove __MACOSX, .DS_Store, Thumbs.db"), isOn: $cleanJunk)
             Toggle(L(".tar.gz / .tgz 一次解到底", "Unpack .tar.gz in one step"), isOn: $nestedTar)
             Toggle(L("解完在访达里选中", "Show in Finder when done"), isOn: $reveal)
             Toggle(L("解完把压缩包移到废纸篓（分卷一起）", "Move archive (all parts) to Trash when done"), isOn: $trashAfter)
             Toggle(L("双击压缩包打开时，解完自动退出", "Quit after extracting files opened from Finder"), isOn: $quitAfter)
-            Divider()
+            Rule()
             Toggle(L("输对的密码记进密码本（存在钥匙串）", "Save correct passwords to Keychain"), isOn: $rememberPw)
             HStack {
-                Text(L("密码本里有 \(saved) 个密码", "\(saved) saved passwords")).foregroundStyle(.secondary)
+                Text(L("密码本里有 \(saved) 个密码", "\(saved) saved passwords")).foregroundStyle(Theme.secondary)
                 Spacer()
-                Button(L("清空", "Clear")) { Passwords.save([]); saved = 0 }.disabled(saved == 0)
+                LinkButton(title: L("清空", "Clear")) { Passwords.save([]); saved = 0 }.disabled(saved == 0)
             }
         }
+        .font(.system(size: 13))
         .toggleStyle(.checkbox)
-        .padding(16)
-        .frame(width: 360)
+        .padding(18)
+        .frame(width: 370)
     }
 }
 
@@ -1119,7 +1191,6 @@ struct BrowserView: View {
     @State private var checked = Set<Int>()
     @State private var selected = Set<Int>()
     @State private var preview: URL?
-    @State private var previewing = false
     private var fixer: NameFixer { NameFixer(job.sources[0]) }
 
     struct Row: Identifiable { let id: Int; let name: String; let size: Int64; let isDir: Bool; let entry: Entry }
@@ -1132,44 +1203,57 @@ struct BrowserView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(job.sources[0].lastPathComponent).font(.headline).lineLimit(1).truncationMode(.middle)
-                if let t = listing?.type, !t.isEmpty { Text(t).font(.caption).padding(.horizontal, 6).background(.quaternary, in: Capsule()) }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(job.sources[0].lastPathComponent).font(.system(size: 20, weight: .bold)).foregroundStyle(Theme.heading)
+                    .lineLimit(1).truncationMode(.middle)
+                if let t = listing?.type, !t.isEmpty { Text(t).font(.system(size: 12)).foregroundStyle(Theme.faint) }
                 Spacer()
-                TextField(L("搜索", "Search"), text: $query).textFieldStyle(.roundedBorder).frame(width: 180)
+                HStack(spacing: 5) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(Theme.faint)
+                    TextField(L("搜索", "Search"), text: $query).textFieldStyle(.plain)
+                }
+                .font(.system(size: 13))
+                .frame(width: 170)
+                .padding(.bottom, 3)
+                .overlay(alignment: .bottom) { Rectangle().fill(Theme.quoteBar).frame(height: 1) }
             }
-            .padding(12)
-            Divider()
+            .padding(.horizontal, 28).padding(.top, 24).padding(.bottom, 10)
+            Rule().padding(.horizontal, 28)
             Group {
                 if let error {
-                    ContentUnavailableView(error, systemImage: "lock.trianglebadge.exclamationmark")
+                    Text(error).font(.system(size: 15)).foregroundStyle(Theme.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if listing == nil {
-                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Text(L("正在读取…", "Reading…")).font(.system(size: 15)).foregroundStyle(Theme.faint)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     table
                 }
             }
             .frame(maxHeight: .infinity)
-            Divider()
-            HStack {
+            Rule()
+            HStack(spacing: 14) {
                 if let listing {
-                    Text(L("\(listing.entries.filter { !$0.isDir }.count) 个文件 · 解开 \(bytes(listing.totalSize)) · 空格键预览",
-                           "\(listing.entries.filter { !$0.isDir }.count) files · \(bytes(listing.totalSize)) · Space to preview"))
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text(L("\(listing.entries.filter { !$0.isDir }.count) 个文件，解开共 \(bytes(listing.totalSize))；双击或空格键预览",
+                           "\(listing.entries.filter { !$0.isDir }.count) files, \(bytes(listing.totalSize)); double-click or Space to preview"))
+                        .foregroundStyle(Theme.secondary)
                 }
                 Spacer()
-                Button(L("关闭", "Close")) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(L("解压勾选的 \(checkedFiles.count) 项", "Extract \(checkedFiles.count) Checked")) {
+                LinkButton(title: L("关闭", "Close"), color: Theme.secondary) { dismiss() }.keyboardShortcut(.cancelAction)
+                LinkButton(title: checkedFiles.isEmpty ? L("勾选后可只解这几项", "Check items to extract")
+                           : L("解压勾选的 \(checkedFiles.count) 项", "Extract \(checkedFiles.count) checked")) {
                     JobQueue.shared.add(Job(kind: .extract, sources: job.sources, selection: checkedFiles, password: password))
                     dismiss()
                 }
                 .disabled(checkedFiles.isEmpty)
-                .buttonStyle(.borderedProminent)
             }
-            .padding(12)
+            .font(.system(size: 13))
+            .padding(.horizontal, 28).frame(height: 44)
         }
-        .frame(width: 640, height: 480)
+        .frame(width: 660, height: 500)
+        .background(Theme.bg)
+        .foregroundStyle(Theme.text)
         .quickLookPreview($preview)
         .task { await load() }
     }
@@ -1190,15 +1274,19 @@ struct BrowserView: View {
             }
             .width(22)
             TableColumn(L("名称", "Name")) { r in
-                Label {
+                HStack(spacing: 7) {
+                    Image(systemName: r.isDir ? "folder" : (r.entry.encrypted ? "lock" : "doc"))
+                        .foregroundStyle(r.isDir ? Theme.link : Theme.faint).frame(width: 16)
                     Text(r.name).lineLimit(1).truncationMode(.head)
-                } icon: {
-                    Image(systemName: r.isDir ? "folder.fill" : (r.entry.encrypted ? "lock.doc" : "doc")).foregroundStyle(r.isDir ? Color.accentColor : .secondary)
                 }
             }
-            TableColumn(L("大小", "Size")) { r in Text(r.isDir ? "—" : bytes(r.size)).monospacedDigit().foregroundStyle(.secondary) }
+            TableColumn(L("大小", "Size")) { r in Text(r.isDir ? "" : bytes(r.size)).monospacedDigit().foregroundStyle(Theme.secondary) }
                 .width(90)
         }
+        .tableStyle(.inset(alternatesRowBackgrounds: false))
+        .scrollContentBackground(.hidden)
+        .font(.system(size: 13))
+        .padding(.horizontal, 16)
         .contextMenu(forSelectionType: Int.self) { ids in
             Button(L("快速预览", "Quick Look")) { if let id = ids.first { quickLook(id) } }
         } primaryAction: { ids in if let id = ids.first { quickLook(id) } }
@@ -1214,21 +1302,29 @@ struct BrowserView: View {
         switch r {
         case .success(let (l, pw)): listing = l; password = pw
         case .failure(let e):
-            error = e.isPassword ? L("加密了文件名，先在列表里输入密码", "Filenames are encrypted — enter the password first") : e.text
+            error = e.isPassword ? L("文件名也加密了，先在列表里输入密码。", "Filenames are encrypted — enter the password first.") : e.text
         }
     }
 
-    /// 把这一项单独解到临时目录，用系统的快速预览打开
+    /// 把这一项单独解到临时目录，用系统的快速预览打开（RAR 7-Zip 解不了，换 unar）
     func quickLook(_ id: Int) {
         guard let e = listing?.entries.first(where: { $0.id == id }), !e.isDir else { return }
         let arc = job.sources[0], pw = password ?? "", good = (fixer.display(e, total: listing?.entries.count ?? 0) as NSString).lastPathComponent
         Task.detached {
-            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("unpack-preview-\(id)-\(UUID().uuidString.prefix(6))")
+            let fm = FileManager.default
+            let dir = fm.temporaryDirectory.appendingPathComponent("unpack-preview-\(id)-\(UUID().uuidString.prefix(6))")
             _ = SevenZip.run(["e", "-y", "-spd", "-sccUTF-8", "-p" + pw, "-o" + dir.path, arc.path, e.path])
-            guard var u = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?.first else { return }
+            func files() -> [URL] {
+                guard let en = fm.enumerator(at: dir, includingPropertiesForKeys: [.isRegularFileKey]) else { return [] }
+                return en.compactMap { $0 as? URL }.filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+            }
+            if files().isEmpty {
+                _ = SevenZip.run(["-o", dir.path, "-f", "-D", "-nr", "-q", "-p", pw, arc.path, e.path], exe: SevenZip.unar)
+            }
+            guard var u = files().first else { return }
             if good != u.lastPathComponent {
-                let g = dir.appendingPathComponent(good)
-                if (try? FileManager.default.moveItem(at: u, to: g)) != nil { u = g }
+                let g = u.deletingLastPathComponent().appendingPathComponent(good)
+                if (try? fm.moveItem(at: u, to: g)) != nil { u = g }
             }
             let shown = u
             await MainActor.run { preview = shown }
