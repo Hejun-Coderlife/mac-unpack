@@ -54,8 +54,9 @@ class BrowserForm : Form
         // 顶部：标题 + 格式 + 搜索框（只有一条下划线）
         var top = new Panel { Dock = DockStyle.Top, Height = 64, BackColor = Theme.Bg, Padding = new Padding(28, 0, 28, 0) };
         var title = Theme.Lbl(Text, Theme.Heading, 15, true);
-        title.AutoEllipsis = true; title.AutoSize = false; title.SetBounds(28, 20, 400, 32);
-        type.Location = new Point(432, 30);
+        title.AutoEllipsis = true; title.MaximumSize = new Size(440, 0); title.Location = new Point(28, 20);
+        title.SizeChanged += (_, _) => type.Location = new Point(title.Right + 10, 30);   // 「zip」紧跟在标题后面
+        type.Location = new Point(28 + Math.Min(440, title.PreferredWidth) + 10, 30);
         var sbox = new Panel { Width = 190, Height = 26, Anchor = AnchorStyles.Top | AnchorStyles.Right, BackColor = Theme.Bg };
         sbox.Controls.Add(search);
         search.Location = new Point(0, 4);
@@ -99,6 +100,21 @@ class BrowserForm : Form
         list.Columns.Add(L("大小", "Size"), 90, HorizontalAlignment.Right);
         list.Columns.Add(L("修改日期", "Modified"), 140);
         list.HeaderStyle = ColumnHeaderStyle.Clickable;
+        // 列头自己画：深色时跟着变深，点过的列标个 ▲▼（行还是系统画，勾选框照常）
+        list.OwnerDraw = true;
+        list.DrawItem += (_, e) => e.DrawDefault = true;
+        list.DrawSubItem += (_, e) => e.DrawDefault = true;
+        list.DrawColumnHeader += (_, e) =>
+        {
+            using var bg = new SolidBrush(Theme.Bg);
+            e.Graphics.FillRectangle(bg, e.Bounds);
+            using var line = new Pen(Theme.Rule);
+            e.Graphics.DrawLine(line, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
+            var text = e.Header!.Text + (e.ColumnIndex == sortCol ? (sortDesc ? "  ▼" : "  ▲") : "");
+            var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | (e.Header.TextAlign == HorizontalAlignment.Right ? TextFormatFlags.Right : TextFormatFlags.Left);
+            var r = new Rectangle(e.Bounds.X + 6, e.Bounds.Y, e.Bounds.Width - 12, e.Bounds.Height);
+            TextRenderer.DrawText(e.Graphics, text, Theme.F(9.5f), r, Theme.Secondary, flags);
+        };
         list.ColumnClick += (_, e) => { if (sortCol == e.Column) sortDesc = !sortDesc; else { sortCol = e.Column; sortDesc = false; } Fill(); };
         list.Visible = false;
         list.ContextMenuStrip = menu;
