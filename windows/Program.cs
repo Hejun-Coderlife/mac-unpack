@@ -28,11 +28,20 @@ static class Program
         var form = new MainForm();
         Ui.Context = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         if (first) Listen(form);
+        // 截图用：UNPACK_SHOW=browse:压缩包 / compose:文件 直接打开对应窗口
+        if (Environment.GetEnvironmentVariable("UNPACK_SHOW") is { } show && show.IndexOf(':') is var ci and > 0)
+        {
+            var target = show[(ci + 1)..];
+            form.Shown += (_, _) => form.BeginInvoke(() => { if (show.StartsWith("browse")) form.Browse(target); else form.Compose(new List<string> { target }); });
+        }
+        bool background = args.Contains(BackgroundFlag);
+        args = args.Where(a => a != BackgroundFlag).ToArray();
         if (args.Length > 0)
         {
             JobQueue.Shared.OpenedByShell = true;
             form.Shown += (_, _) => form.BeginInvoke(() => Handle(form, args));
         }
+        form.StartHidden = background && Prefs.Current.WatchDownloads && args.Length == 0;   // 开机启动：不弹窗口，待在托盘
         Application.Run(form);
         JobQueue.Shared.CancelAll();
         Updater.InstallOnExit();
@@ -40,12 +49,15 @@ static class Program
     }
 
     public const string BrowseFlag = "--browse";   // 右键「用解压查看内容」：先看内容，不解开
+    public const string ToFlag = "--to";           // 右键「解压到…」：先选位置
+    public const string BackgroundFlag = "--background";   // 开机自动启动（盯「下载」）：不弹窗口，待在托盘
 
     /// 双击 / 右键 / 拖到图标上交进来的文件：要么先看内容，要么直接解（压）
     static void Handle(MainForm form, string[] args)
     {
-        bool browse = args.Length > 0 && args[0] == BrowseFlag;
-        var paths = args.Where(a => a != BrowseFlag).ToArray();
+        bool browse = args.Length > 0 && args[0] == BrowseFlag, to = args.Length > 0 && args[0] == ToFlag;
+        var paths = args.Where(a => a != BrowseFlag && a != ToFlag && a != BackgroundFlag).ToArray();
+        if (to) { form.ShowFromTray(); form.PickExtractTo(paths); return; }
         // 设置里选了「双击先看内容」：只打开一个压缩包时先看，一次打开好几个还是直接解
         if (!browse && Prefs.Current.BrowseOnOpen && paths.Length == 1 && Archive.IsArchive(paths[0])) browse = true;
         if (browse && paths.FirstOrDefault(Archive.IsArchive) is { } a) form.Browse(Archive.FirstVolume(a));
@@ -59,7 +71,7 @@ static class Program
         {
             using var c = new NamedPipeClientStream(".", PipeName, PipeDirection.Out);
             c.Connect(1500);
-            var data = Encoding.UTF8.GetBytes(string.Join("\n", args.Select(a => a == BrowseFlag ? a : Path.GetFullPath(a))));
+            var data = Encoding.UTF8.GetBytes(string.Join("\n", args.Select(a => a.StartsWith("--") ? a : Path.GetFullPath(a))));
             c.Write(data, 0, data.Length);
             return true;
         }
@@ -81,7 +93,7 @@ static class Program
                     var paths = Encoding.UTF8.GetString(ms.ToArray()).Split('\n', StringSplitOptions.RemoveEmptyEntries);
                     Ui.Post(() =>
                     {
-                        form.BringToFrontForce();
+                        form.ShowFromTray();
                         if (paths.Length > 0) { JobQueue.Shared.OpenedByShell = true; Handle(form, paths); }
                     });
                 }
@@ -152,7 +164,11 @@ static class Program
             var (l, pw) = r.Value;
             Say($"LIST {Path.GetFileName(arc)} type={l.Type} n={l.Entries.Count} pw={pw ?? "-"} enc={NameFixer.Charset(cp)}");
             foreach (var e in l.Entries.Take(5)) Say("    " + e.Path);
-            var x = Engine.Extract(arc, pw, l, null, cp, new Runner(), null);
+            // UNPACK_ACTION=test 只检查完整性；=zip / =7z 转格式
+            var action = Environment.GetEnvironmentVariable("UNPACK_ACTION");
+            var x = action == "test" ? Engine.Test(arc, pw, l, cp, new Runner(), null)
+                : action != null ? Engine.Convert(arc, action, pw, l, cp, new Runner(), null)
+                : Engine.Extract(arc, pw, l, null, cp, new Runner(), null);
             if (x.Ok) Say("OK → " + x.Value);
             else { Say("FAIL extract: " + x.Error.Text); failed++; }
         }
@@ -190,6 +206,16 @@ static class ContextMenu
                 using var cmd = k.CreateSubKey("command");
                 cmd.SetValue("", $"\"{exe}\" \"%1\"");
             }
+            foreach (var key in BrowseExts.Select(e => $@"Software\Classes\SystemFileAssociations\{e}\shell\UnpackTo"))
+            {
+                if (!on) { Registry.CurrentUser.DeleteSubKeyTree(key, false); continue; }
+                using var k = Registry.CurrentUser.CreateSubKey(key);
+                k.SetValue("", I18n.L("用「解压」解压到…", "Extract with Unpack to…"));
+                k.SetValue("Icon", $"\"{exe}\",0");
+                k.SetValue("MultiSelectModel", "Player");
+                using var cmd = k.CreateSubKey("command");
+                cmd.SetValue("", $"\"{exe}\" {Program.ToFlag} \"%1\"");
+            }
             foreach (var key in BrowseKeys)
             {
                 if (!on) { Registry.CurrentUser.DeleteSubKeyTree(key, false); continue; }
@@ -199,6 +225,54 @@ static class ContextMenu
                 using var cmd = k.CreateSubKey("command");
                 cmd.SetValue("", $"\"{exe}\" {Program.BrowseFlag} \"%1\"");
             }
+        }
+        catch { }
+    }
+}
+
+/// Windows 11 的新右键菜单把老程序的菜单项都收进「显示更多选项」。正规做法要带签名的打包程序；
+/// 这里给一个开关：在当前用户注册表里放一个空的 InprocServer32，系统就换回 Win10 样式、所有菜单一右键就看到（关掉就删掉，恢复 Win11 样式）
+static class ClassicMenu
+{
+    const string Key = @"Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}";
+    public static bool IsWin11 => Environment.OSVersion.Version.Build >= 22000;
+    public static bool On { get { using var k = Registry.CurrentUser.OpenSubKey(Key + @"\InprocServer32"); return k != null; } }
+
+    public static void Set(bool on)
+    {
+        try
+        {
+            if (!on) { Registry.CurrentUser.DeleteSubKeyTree(Key, false); return; }
+            using var k = Registry.CurrentUser.CreateSubKey(Key + @"\InprocServer32");
+            k.SetValue("", "");
+        }
+        catch { }
+    }
+
+    /// 资源管理器要重开一次才换样式（桌面、任务栏会闪一下）
+    public static void RestartExplorer()
+    {
+        try
+        {
+            foreach (var p in System.Diagnostics.Process.GetProcessesByName("explorer")) { try { p.Kill(); } catch { } }
+            System.Threading.Thread.Sleep(800);
+            if (System.Diagnostics.Process.GetProcessesByName("explorer").Length == 0) System.Diagnostics.Process.Start("explorer.exe");
+        }
+        catch { }
+    }
+}
+
+/// 开机自动启动（盯「下载」用）：只写当前用户的 Run 键，带 --background 启动后藏在托盘
+static class Autostart
+{
+    const string Key = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    public static void Set(bool on)
+    {
+        try
+        {
+            using var k = Registry.CurrentUser.CreateSubKey(Key);
+            if (on) k.SetValue("Unpack", $"\"{Environment.ProcessPath ?? Application.ExecutablePath}\" {Program.BackgroundFlag}");
+            else k.DeleteValue("Unpack", false);
         }
         catch { }
     }

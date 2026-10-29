@@ -3,7 +3,7 @@ using System.Diagnostics;
 
 namespace Unpack;
 
-enum JobKind { Extract, Compress }
+enum JobKind { Extract, Compress, Test, Convert }
 enum JobState { Waiting, Working, NeedPassword, Done, Failed }
 
 class Job
@@ -13,6 +13,9 @@ class Job
     public readonly List<string> Sources;
     public readonly List<string> Selection;   // 只解其中几项（从「查看内容」里勾的）
     public readonly CompressOptions Options;  // 压缩任务用
+    public string ConvertTo;                  // 转格式任务：zip / 7z
+    public string Dest;                       // 「解压到…」临时选的位置（null = 设置里的）
+    public bool FromWatch;                    // 「下载」里自动解的：解完把原包移到回收站、不弹资源管理器
     public JobState State = JobState.Waiting;
     public double Fraction;
     public string Detail = "";
@@ -23,6 +26,7 @@ class Job
     public int? CodePage;
     Runner runner = new();
 
+    public static event Action<Job> Finished;   // 完了（成功、失败、要密码）：弹通知用
     public event Action Changed;          // 状态变了（界面要重排）
     public event Action ProgressChanged;  // 只是进度和文字变了
 
@@ -31,12 +35,21 @@ class Job
         Kind = kind; Sources = sources; Selection = selection; Password = password; Options = options ?? CompressOptions.FromPrefs();
     }
 
-    /// 标题后面的灰字：→ zip、→ 7z · 加密 · 分卷
+    /// 标题后面的灰字
+    public string Tag => Kind switch
+    {
+        JobKind.Compress => CompressTag,
+        JobKind.Test => I18n.L("检查完整性", "integrity check"),
+        JobKind.Convert => "→ " + ConvertTo,
+        _ => null,
+    };
+
+    /// 压缩的灰字：→ zip、→ 7z · 加密 · 分卷
     public string CompressTag => "→ " + Options.Format
         + (string.IsNullOrEmpty(Options.Password) ? "" : I18n.L(" · 加密", " · encrypted"))
         + (Options.SplitMB > 0 ? I18n.L(" · 分卷", " · split") : "");
 
-    public string Title => Kind == JobKind.Extract
+    public string Title => Kind is JobKind.Test or JobKind.Convert ? Path.GetFileName(Sources[0]) : Kind == JobKind.Extract
         ? Path.GetFileName(Sources[0]) + (Selection != null ? I18n.L($"（选中 {Selection.Count} 项）", $" ({Selection.Count} selected)") : "")
         : Sources.Count == 1 ? Path.GetFileName(Sources[0].TrimEnd('\\', '/')) : I18n.L($"{Sources.Count} 个项目", $"{Sources.Count} items");
 
@@ -73,6 +86,7 @@ class Job
                 Password = null;
                 Detail = "";
                 Changed?.Invoke();
+                if (typed == null) Finished?.Invoke(this);
             });
             return;
         }
@@ -81,23 +95,40 @@ class Job
         Listing = listing;
         Password = pw;
         if (typed != null && typed == pw && Prefs.Current.RememberPw) Passwords.Remember(typed);
-        Finish(Engine.Extract(arc, pw, listing, Selection, CodePage, r, Report));
+        switch (Kind)
+        {
+            case JobKind.Test:
+                int n = listing.Entries.Count(e => !e.IsDir);
+                Finish(Engine.Test(arc, pw, listing, CodePage, r, Report), I18n.L($"完好：{n} 个文件都校验通过", $"OK: all {n} files passed"));
+                break;
+            case JobKind.Convert:
+                Finish(Engine.Convert(arc, ConvertTo, pw, listing, CodePage, r, Report));
+                break;
+            default:
+                Finish(Engine.Extract(arc, pw, listing, Selection, CodePage, r, Report, Dest));
+                break;
+        }
     }
 
-    void Finish(Result<string> res)
+    /// note：完成后显示的话（检查完整性用）；没有就显示放到了哪
+    void Finish(Result<string> res, string note = null)
     {
         Ui.Post(() =>
         {
-            if (res.Ok)
+            if (res.Ok && note != null)
+            {
+                State = JobState.Done; ResultPath = res.Value; Fraction = 1; Detail = note;
+            }
+            else if (res.Ok)
             {
                 State = JobState.Done;
                 ResultPath = res.Value;
                 Fraction = 1;
                 var dir = Path.GetFileName(Path.GetDirectoryName(res.Value)) ?? "";
                 Detail = I18n.L($"已放到「{dir}」里：{Path.GetFileName(res.Value)}", $"Saved to “{dir}”: {Path.GetFileName(res.Value)}");
-                if (Kind == JobKind.Extract && Selection == null && Prefs.Current.TrashAfter)
+                if (Kind == JobKind.Extract && Selection == null && (Prefs.Current.TrashAfter || FromWatch))
                     foreach (var v in Archive.Volumes(Sources[0])) Shell.Recycle(v);
-                if (Prefs.Current.Reveal) Shell.Reveal(res.Value);
+                if (Prefs.Current.Reveal && !FromWatch) Shell.Reveal(res.Value);
             }
             else
             {
@@ -105,6 +136,7 @@ class Job
                 Detail = res.Error.Text;
             }
             Changed?.Invoke();
+            Finished?.Invoke(this);
         });
     }
 }
@@ -118,7 +150,8 @@ class JobQueue
     public event Action ListChanged;
     public event Action AllDone;
 
-    public void Add(IEnumerable<string> paths)
+    /// dest：「解压到…」选的位置；fromWatch：「下载」里自动发现的
+    public void Add(IEnumerable<string> paths, string dest = null, bool fromWatch = false)
     {
         var loose = new List<string>();
         foreach (var raw in paths)
@@ -131,7 +164,7 @@ class JobQueue
                 // 一套分卷一起拖进来时只算一个任务
                 if (Jobs.Any(j => j.Kind == JobKind.Extract && j.Selection == null && string.Equals(j.Sources[0], first, StringComparison.OrdinalIgnoreCase)
                                   && j.State != JobState.Done && j.State != JobState.Failed)) continue;
-                Jobs.Add(new Job(JobKind.Extract, new List<string> { first }));
+                Jobs.Add(new Job(JobKind.Extract, new List<string> { first }) { Dest = dest, FromWatch = fromWatch });
             }
             else if (File.Exists(p) || Directory.Exists(p)) loose.Add(p);
         }
@@ -163,7 +196,7 @@ class JobQueue
         if (next == null)
         {
             // 双击压缩包打开、而且全部顺利解完：自动退出（设置里打开才这样）
-            if (OpenedByShell && !Browsing && Prefs.Current.QuitAfter && Jobs.Count > 0 && Jobs.All(j => j.State == JobState.Done)) AllDone?.Invoke();
+            if (OpenedByShell && !Browsing && !Prefs.Current.WatchDownloads && Prefs.Current.QuitAfter && Jobs.Count > 0 && Jobs.All(j => j.State == JobState.Done)) AllDone?.Invoke();
             return;
         }
         next.State = JobState.Working;

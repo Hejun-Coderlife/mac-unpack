@@ -87,6 +87,32 @@ jobs:
           if ($p.HasExited) { throw "main window exited" }
           if ((Get-Process -Name "解压" -ErrorAction SilentlyContinue | Measure-Object).Count -gt 1) { throw "second instance did not hand over" }
           Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue
+          # 新窗口：查看内容、新建压缩包；浅色、深色各截一张
+          foreach ($mode in "light", "dark") {
+            Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name AppsUseLightTheme -Value ([int]($mode -eq "light")) -Type DWord -Force
+            foreach ($w in @(@("browse", "demo\photos.zip"), @("compose", "demo"))) {
+              $env:UNPACK_SHOW = "$($w[0]):$((Resolve-Path $w[1]).Path)"
+              Start-Process $exe; Start-Sleep 6; Shot "8-$($w[0])-$mode"
+              Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue; Start-Sleep 1
+            }
+          }
+          Remove-Item Env:UNPACK_SHOW
+          # 自动解开「下载」：开着时新放进来的压缩包（先是 .crdownload 半截，再改名）要被解开、原包进回收站；原来就在的不动
+          $wd = "$env:TEMP\watch-dl"; New-Item -ItemType Directory $wd -Force | Out-Null
+          Copy-Item demo\photos.zip "$wd\已经在的.zip"
+          Set-Content "$env:APPDATA\Unpack\settings.json" '{"Reveal": false, "Notify": false, "WatchDownloads": true}'
+          $env:UNPACK_WATCH_DIR = $wd
+          Start-Process $exe; Start-Sleep 5
+          Copy-Item demo\photos.zip "$wd\新下的.zip.crdownload"; Start-Sleep 4
+          Rename-Item "$wd\新下的.zip.crdownload" "新下的.zip"; Start-Sleep 12
+          Get-ChildItem $wd | Format-Table Name
+          Stop-Process -Name "解压" -Force -ErrorAction SilentlyContinue
+          Remove-Item Env:UNPACK_WATCH_DIR
+          Set-Content "$env:APPDATA\Unpack\settings.json" '{"Reveal": false}'
+          if (Test-Path "$wd\新下的.zip") { throw "watch: new archive not extracted/recycled" }
+          if (!(Test-Path "$wd\已经在的.zip")) { throw "watch: existing archive was touched" }
+          if (!(Test-Path "$wd\a.txt")) { throw "watch: extracted file missing" }
+          Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name AppsUseLightTheme -Value 1 -Type DWord -Force
 
       - name: Build installer
         shell: pwsh

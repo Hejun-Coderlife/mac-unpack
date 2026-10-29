@@ -90,10 +90,11 @@ static class Updater
         catch { }
     }
 
-    public static async void Check()
+    /// force：设置里点「检查更新」，不管开没开自动更新都马上问一次；done 收到结果的话
+    public static async void Check(bool force = false, Action<string> done = null)
     {
         var p = Prefs.Current;
-        if (!p.AutoUpdate) return;
+        if (!force && !p.AutoUpdate) return;
         ShowPending();
         try
         {
@@ -104,13 +105,17 @@ static class Updater
             var asset = j.GetProperty("assets").EnumerateArray()
                 .Where(a => a.GetProperty("name").GetString() == AssetName)
                 .Select(a => a.GetProperty("browser_download_url").GetString()).FirstOrDefault();
-            if (asset == null) return;   // 新版的安装包还没传上去：下次再看
+            if (asset == null) { done?.Invoke(I18n.L("已经是最新版", "You're up to date")); return; }   // 新版的安装包还没传上去：下次再看
             if (tag != p.LatestVersion) p.ReadySetup = "";   // 又出了更新的版本：之前下的作废
             p.LastUpdateCheck = DateTime.UtcNow; p.LatestVersion = tag; p.LatestAsset = asset; p.Save();
+            done?.Invoke(Newer(tag, Current) ? I18n.L($"有新版本 {tag}，见底部状态栏", $"Version {tag} is available") : I18n.L("已经是最新版", "You're up to date"));
             ShowPending();
         }
-        catch { }
+        catch { done?.Invoke(I18n.L("没连上 GitHub，稍后再试", "Couldn't reach GitHub")); }
     }
+
+    /// 版本号写成 1.2（不带后面的 .0.0）
+    public static string CurrentText => Current.Build > 0 ? $"{Current.Major}.{Current.Minor}.{Current.Build}" : $"{Current.Major}.{Current.Minor}";
 
     public static async void Install()
     {

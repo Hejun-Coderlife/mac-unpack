@@ -1,5 +1,5 @@
-// 查看内容：像文件夹一样一层层点进去；搜索、勾选只解几个、双击（或回车）单独解出一个文件用默认程序预览
-// zip / 7z / tar 还能直接改：拖文件进来就加到当前文件夹、右键改名（F2）、删除（Delete）
+// 查看内容：像文件夹一样一层层点进去；搜索、勾选只解几个、拖出去就解到那里；双击（或回车）单独解出一个文件用默认程序打开
+// zip / 7z / tar 还能直接改：拖文件进来就加到当前文件夹、右键改名（F2）、删除（Delete）；双击打开的文件改完保存，自动写回压缩包
 using static Unpack.I18n;
 
 namespace Unpack;
@@ -21,7 +21,7 @@ class BrowserForm : Form
     readonly FlowLayoutPanel crumbs = Theme.Row();
     readonly FlowLayoutPanel tools = Theme.Row();
     readonly FlowLayoutPanel pwPanel = Theme.Column();
-    readonly ContextMenuStrip menu = new() { Font = Theme.F(9.5f), ShowImageMargin = false };
+    readonly ContextMenuStrip menu = Theme.Menu();
     LinkLabel extractLink, deleteLink;
     Listing listing;
     string blocker;                         // 不能改的原因；null = 能改
@@ -29,9 +29,16 @@ class BrowserForm : Form
     string busy;                            // 正在改包
     readonly HashSet<string> check = new(StringComparer.OrdinalIgnoreCase);
     bool filling;
+    // 双击打开、正在别的程序里改的文件：盯着它的修改时间，变了就写回压缩包
+    record Watch(string File, string Dir) { public DateTime Stamp; }
+    readonly List<Watch> watching = new();
+    readonly System.Windows.Forms.Timer watchTimer = new() { Interval = 1500 };
 
     /// 列表里的一行：真实的文件/文件夹，或者只是从路径里看出来的文件夹（包里没单独记它）
-    record Node(string Id, string Name, bool IsDir, long Size, bool Encrypted);
+    record Node(string Id, string Name, bool IsDir, long Size, bool Encrypted, DateTime? Modified = null);   // 文件夹的 Modified = 里面最新的
+    int sortCol;            // 按哪列排：0 名称 / 1 大小 / 2 修改日期
+    bool sortDesc;
+    readonly Dictionary<string, string[]> dragged = new();   // 拖出去解好的（松手太早时，再拖一次直接用）
 
     public BrowserForm(string arc, string password = null)
     {
@@ -89,7 +96,10 @@ class BrowserForm : Form
 
         var mid = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 0, 16, 0), BackColor = Theme.Bg };
         list.Columns.Add(L("名称", "Name"), 480);
-        list.Columns.Add(L("大小", "Size"), 110, HorizontalAlignment.Right);
+        list.Columns.Add(L("大小", "Size"), 90, HorizontalAlignment.Right);
+        list.Columns.Add(L("修改日期", "Modified"), 140);
+        list.HeaderStyle = ColumnHeaderStyle.Clickable;
+        list.ColumnClick += (_, e) => { if (sortCol == e.Column) sortDesc = !sortDesc; else { sortCol = e.Column; sortDesc = false; } Fill(); };
         list.Visible = false;
         list.ContextMenuStrip = menu;
         message.AutoSize = false; message.Dock = DockStyle.Fill; message.TextAlign = ContentAlignment.MiddleCenter;
@@ -99,7 +109,7 @@ class BrowserForm : Form
         mid.Controls.Add(pwPanel);
         mid.Resize += (_, _) =>
         {
-            list.Columns[0].Width = Math.Max(200, mid.ClientSize.Width - 32 - 130);
+            list.Columns[0].Width = Math.Max(200, mid.ClientSize.Width - 32 - 250);
             pwPanel.Location = new Point(Math.Max(0, (mid.ClientSize.Width - pwPanel.Width) / 2), Math.Max(0, (mid.ClientSize.Height - pwPanel.Height) / 2));
         };
 
@@ -107,6 +117,7 @@ class BrowserForm : Form
         Controls.Add(bottom);
         Controls.Add(bar);
         Controls.Add(top);
+        Theme.Apply(this);
 
         list.ItemChecked += (_, e) =>
         {
@@ -116,11 +127,13 @@ class BrowserForm : Form
             UpdateActions();
         };
         list.ItemActivate += (_, _) => { if (Selected().FirstOrDefault() is { } n) Open(n); };
+        list.ItemDrag += (_, _) => DragOut();
+        watchTimer.Tick += (_, _) => SyncEdits(false);
         list.DragEnter += (_, e) => e.Effect = blocker == null && busy == null && e.Data!.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
         list.DragDrop += (_, e) => { if (e.Data!.GetData(DataFormats.FileDrop) is string[] files) Add(files.ToList()); };
         menu.Opening += (_, e) => { BuildMenu(); e.Cancel = menu.Items.Count == 0; };
         Shown += async (_, _) => { JobQueue.Shared.Browsing = true; await Reload(); };
-        FormClosed += (_, _) => JobQueue.Shared.Browsing = false;
+        FormClosed += (_, _) => { JobQueue.Shared.Browsing = false; watchTimer.Stop(); SyncEdits(true); };
     }
 
     void BuildPasswordPanel()
@@ -168,6 +181,7 @@ class BrowserForm : Form
             return;
         }
         (listing, password) = r.Value;
+        dragged.Clear();   // 包改过了：之前解出来准备拖的作废
         blocker = Editor.Blocker(arc, listing, cp);
         // 原来所在的文件夹被删掉、改名了：退回最外层
         if (cwd.Length > 0 && !listing.Entries.Any(e => Same(e.Path, cwd) || Under(e.Path, cwd))) cwd = "";
@@ -203,24 +217,37 @@ class BrowserForm : Form
         var q = search.Text.Trim();
         if (q.Length > 0)   // 搜索：整个包里找，显示完整路径
             return listing.Entries.Where(e => e.Path.IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0)
-                .Select(e => new Node(e.Path, e.Path, e.IsDir, e.IsDir ? 0 : e.Size, e.Encrypted)).ToList();
+                .Select(e => new Node(e.Path, e.Path, e.IsDir, e.IsDir ? 0 : e.Size, e.Encrypted, e.Modified)).ToList();
         int depth = cwd.Length == 0 ? 0 : Parts(cwd).Length;
-        var dirs = new Dictionary<string, (string Name, long Size)>(StringComparer.OrdinalIgnoreCase);
+        var dirs = new Dictionary<string, (string Name, long Size, DateTime? Date)>(StringComparer.OrdinalIgnoreCase);
         var files = new List<Node>();
         foreach (var e in listing.Entries)
         {
             if (cwd.Length > 0 && !Under(e.Path, cwd)) continue;
             var parts = Parts(e.Path);
             if (parts.Length <= depth) continue;
-            if (parts.Length == depth + 1 && !e.IsDir) { files.Add(new Node(e.Path, parts[depth], false, e.Size, e.Encrypted)); continue; }
+            if (parts.Length == depth + 1 && !e.IsDir) { files.Add(new Node(e.Path, parts[depth], false, e.Size, e.Encrypted, e.Modified)); continue; }
             var key = Prefix(e.Path, depth + 1);
-            var v = dirs.TryGetValue(key, out var d) ? d : (parts[depth], 0L);
+            var v = dirs.TryGetValue(key, out var d) ? d : (parts[depth], 0L, (DateTime?)null);
             if (!e.IsDir) v.Item2 += e.Size;
+            if (e.Modified > (v.Item3 ?? DateTime.MinValue)) v.Item3 = e.Modified;
             dirs[key] = v;
         }
+        return dirs.Select(kv => new Node(kv.Key, kv.Value.Name, true, kv.Value.Size, false, kv.Value.Date)).Concat(files).ToList();
+    }
+
+    /// 按点的列头排序，文件夹总在前面
+    IEnumerable<Node> Sorted(List<Node> ns)
+    {
         var cmp = StringComparer.CurrentCultureIgnoreCase;
-        return dirs.Select(kv => new Node(kv.Key, kv.Value.Name, true, kv.Value.Size, false)).OrderBy(n => n.Name, cmp)
-            .Concat(files.OrderBy(n => n.Name, cmp)).ToList();
+        IOrderedEnumerable<Node> o = ns.OrderBy(n => !n.IsDir);
+        o = sortCol switch
+        {
+            1 => sortDesc ? o.ThenByDescending(n => n.Size) : o.ThenBy(n => n.Size),
+            2 => sortDesc ? o.ThenByDescending(n => n.Modified) : o.ThenBy(n => n.Modified),
+            _ => sortDesc ? o.ThenByDescending(n => n.Name, cmp) : o.ThenBy(n => n.Name, cmp),
+        };
+        return o;
     }
 
     void Fill()
@@ -229,12 +256,14 @@ class BrowserForm : Form
         filling = true;
         list.BeginUpdate();
         list.Items.Clear();
-        foreach (var n in Nodes())
+        foreach (var n in Sorted(Nodes()))
         {
             var it = new ListViewItem((n.IsDir ? "📁 " : n.Encrypted ? "🔒 " : "") + n.Name) { Tag = n, Checked = check.Contains(n.Id) };
             if (n.IsDir) it.ForeColor = Theme.LinkColor;
             it.SubItems.Add(n.IsDir && n.Size == 0 ? "" : Bytes(n.Size));
             it.SubItems[1].ForeColor = Theme.Secondary;
+            it.SubItems.Add(n.Modified?.ToString("g") ?? "");
+            it.SubItems[2].ForeColor = Theme.Secondary;
             list.Items.Add(it);
         }
         list.EndUpdate();
@@ -266,7 +295,22 @@ class BrowserForm : Form
     void BuildTools()
     {
         tools.Controls.Clear();
-        if (blocker != null) { tools.Controls.Add(Theme.Lbl(blocker, Theme.Faint, 9.5f)); return; }
+        // 「工具 ⌄」：检查完整性、转成 zip / 7z
+        var tm = Theme.Menu();
+        tm.Items.Add(L("检查完整性", "Check integrity"), null, (_, _) => Queue(JobKind.Test));
+        tm.Items.Add(new ToolStripSeparator());
+        foreach (var f in new[] { "zip", "7z" }.Where(f => !f.Equals(listing?.Type, StringComparison.OrdinalIgnoreCase)))
+            tm.Items.Add(L($"转成 {f}", $"Convert to {f}"), null, (_, _) => Queue(JobKind.Convert, f));
+        LinkLabel toolsLink = null;
+        toolsLink = Theme.Link(L("工具  ⌄", "Tools  ⌄"), () => tm.Show(toolsLink, new Point(0, toolsLink.Height)), null, 10, new Padding(14, 0, 0, 0));
+        if (blocker != null)
+        {
+            var why = Theme.Lbl(blocker, Theme.Faint, 9.5f);
+            why.AutoEllipsis = true; why.MaximumSize = new Size(360, 0);
+            tools.Controls.Add(toolsLink); tools.Controls.Add(why);
+            return;
+        }
+        tools.Controls.Add(toolsLink);
         tools.Controls.Add(Theme.Link(L("添加文件夹…", "Add Folder…"), () =>
         {
             using var f = new FolderBrowserDialog { ShowNewFolderButton = false };
@@ -321,7 +365,50 @@ class BrowserForm : Form
         if (listing == null) return;
         int files = listing.Entries.Count(e => !e.IsDir);
         info.ForeColor = Theme.Secondary;
-        info.Text = L($"{files} 个文件，解开共 {Bytes(listing.TotalSize)}；双击进文件夹或预览", $"{files} files, {Bytes(listing.TotalSize)}; double-click to open");
+        info.Text = watching.Count > 0 ? L("改完保存，会自动写回压缩包", "Save your changes; they're written back automatically")
+            : L($"{files} 个文件，共 {Bytes(listing.TotalSize)}；双击打开，拖出去就解到那里", $"{files} files, {Bytes(listing.TotalSize)}; double-click to open, drag out to extract");
+    }
+
+    void Queue(JobKind kind, string to = null)
+    {
+        JobQueue.Shared.Add(new Job(kind, new List<string> { arc }, null, password) { ConvertTo = to });
+        Close();
+    }
+
+    /// 拖出去：把选中的几项解到临时目录（保持包里的层级），交给资源管理器当普通文件拖
+    bool draggingOut;
+
+    /// 拖出去：把选中的几项解到临时目录（保持包里的层级），交给资源管理器当普通文件拖。
+    /// 大文件解得久：边解边在底部显示进度、窗口不卡；解完鼠标还按着就接着拖，已经松手了就提示再拖一次（解好的留着，第二次马上出去）
+    async void DragOut()
+    {
+        var sel = Selected();
+        if (sel.Count == 0 || listing == null || busy != null || draggingOut) return;
+        var key = string.Join("|", sel.Select(n => n.Id).OrderBy(x => x));
+        if (!dragged.TryGetValue(key, out var paths) || !paths.All(p => File.Exists(p) || Directory.Exists(p)))
+        {
+            draggingOut = true;
+            var dir = Path.Combine(Path.GetTempPath(), "unpack-drag-" + Guid.NewGuid().ToString("N")[..8]);
+            var files = FilesOf(sel.Select(n => n.Id)); var l = listing; var pw = password; var c = cp;
+            info.ForeColor = Theme.Secondary; info.Text = L("正在解出来…", "Extracting…");
+            var r = await Task.Run(() => Engine.Extract(arc, pw, l, files, c, new Runner(),
+                p => Ui.Post(() => { if (!IsDisposed) info.Text = L($"正在解出来… {(int)(p.Fraction * 100)}%", $"Extracting… {(int)(p.Fraction * 100)}%"); }), dir, false));
+            draggingOut = false;
+            if (IsDisposed) return;
+            if (!r.Ok) { info.Text = r.Error.Text; info.ForeColor = Theme.Error; return; }
+            // Extract 会把只有一个顶层项的直接放出来：按包里的路径找回每一项
+            paths = sel.Select(n => new[] { Path.Combine(dir, n.Id.Replace('/', '\\')), Path.Combine(dir, LastPart(n.Id)) }
+                    .FirstOrDefault(p => File.Exists(p) || Directory.Exists(p))).Where(p => p != null).Distinct().ToArray();
+            if (paths.Length == 0) paths = Engine.Visible(dir).ToArray();
+            dragged[key] = paths;
+            ShowInfo();
+            if ((MouseButtons & MouseButtons.Left) == 0)
+            {
+                info.Text = L("解好了，再拖一次就出去了", "Ready — drag again to drop it"); info.ForeColor = Theme.Ok;
+                return;
+            }
+        }
+        if (paths.Length > 0) list.DoDragDrop(new DataObject(DataFormats.FileDrop, paths), DragDropEffects.Copy | DragDropEffects.Move);
     }
 
     void ExtractChecked()
@@ -335,7 +422,7 @@ class BrowserForm : Form
         menu.Items.Clear();
         var sel = Selected();
         if (sel.Count == 0) return;
-        if (sel.Count == 1) menu.Items.Add(sel[0].IsDir ? L("打开", "Open") : L("预览", "Preview"), null, (_, _) => Open(sel[0]));
+        if (sel.Count == 1) menu.Items.Add(sel[0].IsDir ? L("打开", "Open") : blocker == null ? L("打开（改完自动写回）", "Open (changes are saved back)") : L("打开", "Open"), null, (_, _) => Open(sel[0]));
         menu.Items.Add(L($"解压这 {sel.Count} 项", $"Extract {sel.Count} items"), null, (_, _) =>
             JobQueue.Shared.Add(new Job(JobKind.Extract, new List<string> { arc }, FilesOf(sel.Select(s => s.Id)), password)));
         if (blocker != null || busy != null) return;
@@ -354,8 +441,8 @@ class BrowserForm : Form
         else if (e.KeyCode == Keys.Back && cwd.Length > 0) { var p = Parts(cwd); Go(p.Length > 1 ? Prefix(cwd, p.Length - 1) : ""); e.Handled = true; }
     }
 
-    /// 在后台改包，改完重新读一遍内容
-    async void Edit(string label, Func<Listing, string, Result<bool>> op)
+    /// 在后台改包，改完重新读一遍内容；done：成功后底部显示的话
+    async void Edit(string label, Func<Listing, string, Result<bool>> op, string done = null)
     {
         if (listing == null || busy != null) return;
         busy = label; UpdateActions();
@@ -364,8 +451,30 @@ class BrowserForm : Form
         if (IsDisposed) return;
         busy = null;
         await Reload();
-        if (r.Ok) ShowInfo(); else { info.Text = r.Error.Text; info.ForeColor = Theme.Error; }
+        if (!r.Ok) { info.Text = r.Error.Text; info.ForeColor = Theme.Error; }
+        else if (done != null) { info.Text = "✓ " + done; info.ForeColor = Theme.Ok; }
+        else ShowInfo();
         UpdateActions();
+    }
+
+    static DateTime Stamp(string f) { try { return File.GetLastWriteTimeUtc(f); } catch { return DateTime.MinValue; } }
+
+    /// 有文件改过：等它停了一会儿（别的程序写完）再写回；关窗口时不等，直接写
+    void SyncEdits(bool final)
+    {
+        if (busy != null || listing == null) return;
+        foreach (var w in watching)
+        {
+            var now = Stamp(w.File);
+            if (now <= w.Stamp || (!final && (DateTime.UtcNow - now).TotalSeconds < 1)) continue;
+            w.Stamp = now;
+            var name = Path.GetFileName(w.File); var c = cp;
+            if (final) { var l = listing; var pw = password; Task.Run(() => Editor.Add(new List<string> { w.File }, w.Dir, arc, l, pw, c, new Runner())).Wait(); continue; }
+            Edit(L($"正在把「{name}」写回压缩包…", $"Saving “{name}” into the archive…"),
+                (l, pw) => Editor.Add(new List<string> { w.File }, w.Dir, arc, l, pw, c, new Runner()),
+                L($"已把「{name}」的修改写回压缩包", $"Saved “{name}” into the archive"));
+            return;   // 一次写一个
+        }
     }
 
     void Add(List<string> files)
@@ -412,19 +521,28 @@ class BrowserForm : Form
         Edit(L("正在改名…", "Renaming…"), (l, pw) => Editor.Rename(n.Id, name, arc, l, pw, c, new Runner()));
     }
 
-    /// 把这一项单独解到临时目录，用默认程序打开
-    void Preview(string path)
+    /// 把这一项单独解到临时目录，用默认程序打开；能改的包就盯着它，保存了就写回去
+    async void Preview(string path)
     {
         var e = listing?.Entries.FirstOrDefault(x => x.Path == path);
         if (e == null || e.IsDir) return;
-        var pw = password ?? ""; var c = cp;
-        Task.Run(() =>
+        var pw = password ?? ""; var c = cp; bool editable = blocker == null;
+        int i = path.TrimEnd('\\', '/').LastIndexOfAny(new[] { '\\', '/' });
+        var dirInArc = i < 0 ? "" : path[..i];
+        var f = await Task.Run(() =>
         {
             var dir = Path.Combine(Path.GetTempPath(), $"unpack-preview-{e.Id}-{Guid.NewGuid():N}"[..40]);
             SevenZip.Run(new[] { "e", "-y", "-spd", "-sccUTF-8", "-p" + pw }.Concat(SevenZip.Cp(c)).Concat(new[] { "-o" + dir, arc, e.Path }));
-            var f = Directory.Exists(dir) ? Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).FirstOrDefault() : null;
-            if (f != null) Shell.Open(f);
+            return Directory.Exists(dir) ? Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories).FirstOrDefault() : null;
         });
+        if (f == null || IsDisposed) return;
+        if (editable)
+        {
+            watching.Add(new Watch(f, dirInArc) { Stamp = Stamp(f) });
+            watchTimer.Start();
+            ShowInfo();
+        }
+        Shell.Open(f);
     }
 }
 
@@ -443,6 +561,7 @@ static class Prompt
         var ok = new Button { Text = L("改名", "Rename"), DialogResult = DialogResult.OK, Bounds = new Rectangle(180, 70, 85, 30) };
         var cancel = new Button { Text = L("取消", "Cancel"), DialogResult = DialogResult.Cancel, Bounds = new Rectangle(275, 70, 85, 30) };
         f.Controls.AddRange(new Control[] { box, ok, cancel });
+        Theme.Apply(f);
         f.AcceptButton = ok; f.CancelButton = cancel;
         // 默认只选中名字、不选扩展名，和资源管理器改名一样
         f.Shown += (_, _) => { box.Focus(); int dot = initial.LastIndexOf('.'); box.Select(0, dot > 0 ? dot : initial.Length); };

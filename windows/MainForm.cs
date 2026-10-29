@@ -1,4 +1,5 @@
 // 界面：仿 Typora（GitHub 主题）——白纸页面、大标题+细线、正文排版、蓝色文字链接代替按钮、底部细状态栏
+using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using static Unpack.I18n;
 
@@ -6,18 +7,88 @@ namespace Unpack;
 
 static class Theme
 {
-    public static readonly Color Bg = Color.White;
-    public static readonly Color Text = Hex(0x333333);
-    public static readonly Color Heading = Hex(0x222222);
-    public static readonly Color Secondary = Hex(0x777777);
-    public static readonly Color Faint = Hex(0xAAAAAA);
-    public static readonly Color Rule = Hex(0xEEEEEE);
-    public static readonly Color QuoteBar = Hex(0xDFE2E5);
-    public static readonly Color LinkColor = Hex(0x4183C4);
-    public static readonly Color Error = Hex(0xC7254E);
-    public static readonly Color Ok = Hex(0x4E9A5B);
-    public static readonly Color Bar = Hex(0xF8F8F8);
+    // 深色跟随 Windows「设置 → 个性化 → 颜色 → 应用模式」，打开时读一次；深色用 Typora Night 的配色（和 Mac 版深色一样）
+    public static readonly bool Dark = ReadDark();
+    public static readonly Color Bg = Pick(0xFFFFFF, 0x363B40);
+    public static readonly Color Text = Pick(0x333333, 0xB8BFC6);
+    public static readonly Color Heading = Pick(0x222222, 0xE6E6E6);
+    public static readonly Color Secondary = Pick(0x777777, 0x8B939B);
+    public static readonly Color Faint = Pick(0xAAAAAA, 0x666D74);
+    public static readonly Color Rule = Pick(0xEEEEEE, 0x474D54);
+    public static readonly Color QuoteBar = Pick(0xDFE2E5, 0x575E66);
+    public static readonly Color LinkColor = Pick(0x4183C4, 0x7FB2E8);
+    public static readonly Color Error = Pick(0xC7254E, 0xE8899A);
+    public static readonly Color Ok = Pick(0x4E9A5B, 0x8CC796);
+    public static readonly Color Bar = Pick(0xF8F8F8, 0x2E3236);
+    public static readonly Color Field = Pick(0xFFFFFF, 0x2E3236);   // 输入框、下拉框的底色
+    public static readonly Color Overlay = Pick(0xFAFAFA, 0x30353A);
     static Color Hex(int v) => Color.FromArgb(v >> 16 & 0xFF, v >> 8 & 0xFF, v & 0xFF);
+    static Color Pick(int light, int dark) => Hex(Dark ? dark : light);
+
+    static bool ReadDark()
+    {
+        try
+        {
+            using var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return k?.GetValue("AppsUseLightTheme") is int v && v == 0;
+        }
+        catch { return false; }
+    }
+
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int v, int size);
+    [System.Runtime.InteropServices.DllImport("uxtheme.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] static extern int SetWindowTheme(IntPtr h, string app, string id);
+
+    /// 深色时：标题栏变深、输入框/下拉框/列表/按钮跟着换色（以后加进来的控件也换）
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Control, object> applied = new();
+
+    public static void Apply(Control root)
+    {
+        if (!Dark || applied.TryGetValue(root, out _)) return;   // 同一个控件只挂一次（任务行会反复加进列表）
+        applied.Add(root, null);
+        if (root is Form f)
+        {
+            void Bar() { int on = 1; DwmSetWindowAttribute(f.Handle, 20, ref on, 4); }
+            if (f.IsHandleCreated) Bar(); else f.HandleCreated += (_, _) => Bar();
+        }
+        switch (root)
+        {
+            case TextBox t: t.BackColor = Field; t.ForeColor = Text; break;
+            case ComboBox c: c.BackColor = Field; c.ForeColor = Text; c.FlatStyle = FlatStyle.Flat; break;
+            case Button b: b.BackColor = Field; b.ForeColor = Text; b.FlatStyle = FlatStyle.Flat; b.FlatAppearance.BorderColor = QuoteBar; break;
+            case CheckBox or RadioButton: root.ForeColor = Text; break;
+            case ListView l:
+                if (l.IsHandleCreated) SetWindowTheme(l.Handle, "DarkMode_Explorer", null); else l.HandleCreated += (_, _) => SetWindowTheme(l.Handle, "DarkMode_Explorer", null);
+                break;
+            case ScrollableControl { AutoScroll: true } sc:
+                if (sc.IsHandleCreated) SetWindowTheme(sc.Handle, "DarkMode_Explorer", null); else sc.HandleCreated += (_, _) => SetWindowTheme(sc.Handle, "DarkMode_Explorer", null);
+                break;
+        }
+        foreach (Control ch in root.Controls) Apply(ch);
+        root.ControlAdded += (_, e) => Apply(e.Control!);
+    }
+
+    /// 右键菜单 / 下拉菜单
+    public static ContextMenuStrip Menu()
+    {
+        var m = new ContextMenuStrip { Font = F(9.5f), ShowImageMargin = false };
+        if (Dark) { m.BackColor = Bar; m.ForeColor = Text; m.Renderer = new ToolStripProfessionalRenderer(new DarkMenuColors()); }
+        return m;
+    }
+
+    class DarkMenuColors : ProfessionalColorTable
+    {
+        public override Color ToolStripDropDownBackground => Bar;
+        public override Color MenuItemSelected => QuoteBar;
+        public override Color MenuItemSelectedGradientBegin => QuoteBar;
+        public override Color MenuItemSelectedGradientEnd => QuoteBar;
+        public override Color MenuItemBorder => QuoteBar;
+        public override Color MenuBorder => Rule;
+        public override Color SeparatorDark => Rule;
+        public override Color SeparatorLight => Rule;
+        public override Color ImageMarginGradientBegin => Bar;
+        public override Color ImageMarginGradientMiddle => Bar;
+        public override Color ImageMarginGradientEnd => Bar;
+    }
 
     static readonly string Family = IsZh ? "Microsoft YaHei UI" : "Segoe UI";
     static readonly Dictionary<(float, bool), Font> fonts = new();
@@ -111,7 +182,7 @@ class DropOverlay : Control
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-        g.Clear(Color.FromArgb(250, 250, 250));
+        g.Clear(Theme.Overlay);
         using (var pen = new Pen(Color.FromArgb(128, Theme.LinkColor), 2))
         using (var path = Rounded(new RectangleF(14, 14, Width - 28, Height - 28), 10)) g.DrawPath(pen, path);
         var t1 = L("松手即可", "Release to unpack");
@@ -184,11 +255,135 @@ class MainForm : Form
             if (e.Control && e.Shift && e.KeyCode == Keys.O) { PickBrowse(); e.Handled = true; }
             else if (e.Control && e.KeyCode == Keys.O) { PickFiles(); e.Handled = true; }
             else if (e.Control && e.KeyCode == Keys.N) { PickCompose(); e.Handled = true; }
+            else if (e.Control && e.Shift && e.KeyCode == Keys.E) { PickExtractTo(); e.Handled = true; }
         };
-        FormClosing += (_, _) => JobQueue.Shared.CancelAll();
+        FormClosing += (_, e) =>
+        {
+            // 盯着「下载」时，点关闭只是收到托盘（右下角），右键托盘图标「退出」才真退出
+            if (Prefs.Current.WatchDownloads && !quitting && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); return; }
+            JobQueue.Shared.CancelAll();
+            tray.Visible = false;
+        };
+        BuildTray();
+        Job.Finished += Notify;
+        watchTimer.Tick += (_, _) => WatchTick();
+        SyncWatch();
         Updater.Changed += UpdateChrome;
         Shown += (_, _) => Updater.Check();
         Rebuild();
+        Theme.Apply(this);
+    }
+
+    // ---- 托盘图标：后台盯「下载」时待在这里；也用来弹「解完了」的通知 ----
+    readonly NotifyIcon tray = new();
+    bool quitting;
+    string balloonPath;
+
+    void BuildTray()
+    {
+        try { tray.Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? Application.ExecutablePath); } catch { }
+        tray.Text = AppName;
+        var m = Theme.Menu();
+        m.Items.Add(L("打开「解压」", "Open Unpack"), null, (_, _) => ShowFromTray());
+        m.Items.Add(new ToolStripSeparator());
+        m.Items.Add(L("退出", "Quit"), null, (_, _) => { quitting = true; Close(); });
+        tray.ContextMenuStrip = m;
+        tray.DoubleClick += (_, _) => ShowFromTray();
+        tray.BalloonTipClicked += (_, _) => { if (balloonPath != null) Shell.Reveal(balloonPath); };
+        tray.Visible = Prefs.Current.WatchDownloads;
+    }
+
+    public void ShowFromTray() { Show(); BringToFrontForce(); }
+
+    /// 开机自动启动时不显示窗口（Application.Run 会让窗口出来，这里拦一次）
+    public bool StartHidden;
+    protected override void SetVisibleCore(bool value)
+    {
+        if (StartHidden && value)
+        {
+            StartHidden = false;
+            if (!IsHandleCreated) CreateHandle();
+            base.SetVisibleCore(false);
+            Updater.Check();
+            return;
+        }
+        base.SetVisibleCore(value);
+    }
+
+    /// 窗口不在前面时：解完 / 出错 / 要密码，弹一条通知；点通知在资源管理器里选中结果
+    void Notify(Job j)
+    {
+        if (!Prefs.Current.Notify || (Visible && ContainsFocus)) return;
+        var title = j.State switch
+        {
+            JobState.Done => j.Kind == JobKind.Compress ? L("压缩好了", "Compressed") : j.Kind == JobKind.Test ? L("检查完了", "Check finished") : L("解压好了", "Extracted"),
+            JobState.NeedPassword => L("这个包要密码", "Password needed"),
+            _ => L("没成功", "Failed"),
+        };
+        balloonPath = j.ResultPath;
+        bool wasVisible = tray.Visible;
+        tray.Visible = true;
+        tray.ShowBalloonTip(5000, title, j.Title + "\n" + j.Detail, j.State == JobState.Done ? ToolTipIcon.Info : ToolTipIcon.Warning);
+        if (!wasVisible && !Prefs.Current.WatchDownloads)
+        {
+            var t = new System.Windows.Forms.Timer { Interval = 8000 };
+            t.Tick += (_, _) => { t.Dispose(); if (!Prefs.Current.WatchDownloads) tray.Visible = false; };
+            t.Start();
+        }
+    }
+
+    // ---- 盯着「下载」：新下好的压缩包（大小停住不变、不是 .crdownload/.part 半截文件）自动解开，原包移到回收站 ----
+    readonly System.Windows.Forms.Timer watchTimer = new() { Interval = 3000 };
+    HashSet<string> known = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, long> growing = new(StringComparer.OrdinalIgnoreCase);
+    // 自测：UNPACK_WATCH_DIR=目录 换成盯别的文件夹
+    static string WatchDir => Environment.GetEnvironmentVariable("UNPACK_WATCH_DIR") ?? Engine.Downloads;
+
+    static IEnumerable<string> ListWatch() { try { return Directory.EnumerateFiles(WatchDir).ToList(); } catch { return Array.Empty<string>(); } }
+
+    public void SyncWatch()
+    {
+        tray.Visible = Prefs.Current.WatchDownloads;
+        if (!Prefs.Current.WatchDownloads) { watchTimer.Stop(); return; }
+        if (watchTimer.Enabled) return;
+        known = new HashSet<string>(ListWatch(), StringComparer.OrdinalIgnoreCase);
+        growing.Clear();
+        watchTimer.Start();
+    }
+
+    void WatchTick()
+    {
+        var now = ListWatch().ToList();
+        var ready = new List<string>();
+        foreach (var f in now)
+        {
+            if (known.Contains(f)) continue;
+            var ext = Path.GetExtension(f).TrimStart('.').ToLowerInvariant();
+            if (Path.GetFileName(f).StartsWith(".") || ext is "crdownload" or "part" or "partial" or "tmp" or "download") continue;
+            if (!Archive.IsArchive(f)) { known.Add(f); continue; }
+            long size = Fs.SizeOf(f);
+            if (growing.TryGetValue(f, out var last) && last == size && size > 0 && CanOpen(f)) { ready.Add(f); known.Add(f); growing.Remove(f); }
+            else growing[f] = size;   // 下一轮大小还一样（而且浏览器已经松开文件）才算下完
+        }
+        known.IntersectWith(now);
+        if (ready.Count > 0) JobQueue.Shared.Add(ready, null, true);
+    }
+
+    static bool CanOpen(string f) { try { using var _ = File.Open(f, FileMode.Open, FileAccess.Read, FileShare.Read); return true; } catch { return false; } }
+
+    /// Ctrl+Shift+E / 右键「解压到…」：先选位置，再解到那里
+    public void PickExtractTo(IEnumerable<string> archives = null)
+    {
+        var list = archives?.Where(Archive.IsArchive).ToList();
+        if (list == null)
+        {
+            using var d = new OpenFileDialog { Multiselect = true, Title = L("选要解开的压缩包，下一步选解到哪", "Choose archives; next, pick where to extract") };
+            if (d.ShowDialog(this) != DialogResult.OK) return;
+            list = d.FileNames.ToList();
+        }
+        if (list.Count == 0) return;
+        using var f = new FolderBrowserDialog { ShowNewFolderButton = true, Description = L("解到哪个文件夹？", "Extract to which folder?"), UseDescriptionForTitle = true };
+        if (f.ShowDialog(this) == DialogResult.OK) JobQueue.Shared.Add(list, f.SelectedPath);
     }
 
     void EnableDrop(Control c)
@@ -362,7 +557,7 @@ class MainForm : Form
     void BuildStatusBar()
     {
         statusBar.Paint += (_, e) => { using var p = new Pen(Theme.Rule); e.Graphics.DrawLine(p, 0, 0, statusBar.Width, 0); };
-        var menu = new ContextMenuStrip { Font = Theme.F(9.5f), ShowImageMargin = false };
+        var menu = Theme.Menu();
         void SetDest(string d) { Prefs.Current.Dest = d; Prefs.Current.Save(); UpdateChrome(); }
         menu.Items.Add(L("压缩包所在的文件夹", "Next to the archive"), null, (_, _) => SetDest(""));
         menu.Items.Add(L("下载", "Downloads"), null, (_, _) => SetDest(Engine.Downloads));
@@ -464,7 +659,7 @@ class JobRow : Panel
         head.Controls.Add(title);
         int vols = job.VolumeCount;
         if (vols > 1) head.Controls.Add(Theme.Lbl(L($"{vols} 卷", $"{vols} parts"), Theme.Faint, 10, false, new Padding(8, 3, 0, 0)));
-        if (job.Kind == JobKind.Compress) head.Controls.Add(Theme.Lbl(job.CompressTag, Theme.Faint, 10, false, new Padding(8, 3, 0, 0)));
+        if (job.Tag != null) head.Controls.Add(Theme.Lbl(job.Tag, Theme.Faint, 10, false, new Padding(8, 3, 0, 0)));
         if (job.State != JobState.Working)
             head.Controls.Add(Theme.Link(L("移除", "Remove"), () => JobQueue.Shared.Remove(job), Theme.Faint, 9, new Padding(12, 4, 0, 0)));
         body.Controls.Add(head);
@@ -579,9 +774,24 @@ class SettingsForm : Form
         Box(L("解完在资源管理器里选中", "Show in Explorer when done"), p.Reveal, v => p.Reveal = v);
         Box(L("解完把压缩包移到回收站（分卷一起）", "Move archive (all parts) to Recycle Bin when done"), p.TrashAfter, v => p.TrashAfter = v);
         Box(L("双击压缩包时先看内容，不直接解开", "Double-click an archive to browse it first"), p.BrowseOnOpen, v => p.BrowseOnOpen = v);
+        Box(L("在后台解完时弹通知", "Notify me when done in the background"), p.Notify, v => p.Notify = v);
+        Box(L("自动解开「下载」里新下好的压缩包（原包移到回收站）", "Auto-extract new archives in Downloads (then recycle them)"), p.WatchDownloads, v =>
+        {
+            p.WatchDownloads = v;
+            Autostart.Set(v);
+            (Application.OpenForms.OfType<MainForm>().FirstOrDefault())?.SyncWatch();
+        });
+        col.Controls.Add(Theme.Lbl(L("开着这个：开机自动启动，关掉窗口会收到右下角托盘，右键托盘图标可退出", "Starts with Windows; closing the window keeps it in the tray"),
+            Theme.Faint, 9, false, new Padding(18, 0, 0, 4)));
         Box(L("双击压缩包打开时，解完自动退出", "Quit after extracting files opened from Explorer"), p.QuitAfter, v => p.QuitAfter = v);
         Box(L("自动更新（有新版就在后台下好，关掉解压时装上）", "Update automatically (downloads in the background, installs when you quit)"), p.AutoUpdate, v => p.AutoUpdate = v);
         Box(L("资源管理器右键菜单加「用解压处理」「用解压查看内容」", "Add “Open with Unpack” and “Browse with Unpack” to the Explorer context menu"), ContextMenu.Installed, ContextMenu.Set);
+        if (ClassicMenu.IsWin11)
+        {
+            // Windows 11 把老程序的右键菜单都收进「显示更多选项」：打开这个就一右键直接看到（整个系统的右键菜单都换回 Win10 样式）
+            Box(L("Windows 11 右键直接显示这些菜单（整个系统换回 Win10 样式的右键菜单）", "Show these right away on Windows 11 (switches the whole system to the classic menu)"),
+                ClassicMenu.On, v => { ClassicMenu.Set(v); ClassicMenu.RestartExplorer(); });
+        }
         col.Controls.Add(Theme.RuleLine(new Padding(0, 8, 0, 8)));
         var fmt = Theme.Row(new Padding(0, 3, 0, 3));
         fmt.Controls.Add(Theme.Lbl(L("拖进来压缩成", "Compress to"), Theme.Text, 10, false, new Padding(0, 4, 8, 0)));
@@ -602,12 +812,97 @@ class SettingsForm : Form
         var row = Theme.Row(new Padding(0, 6, 0, 0));
         var count = Theme.Lbl(L($"密码本里有 {saved} 个密码", $"{saved} saved passwords"), Theme.Secondary, 10, false, new Padding(0, 0, 12, 0));
         row.Controls.Add(count);
+        row.Controls.Add(Theme.Link(L("管理…", "Manage…"), () =>
+        {
+            using var b = new PasswordBookForm(); b.ShowDialog(this);
+            int n = Passwords.All().Count;
+            count.Text = L($"密码本里有 {n} 个密码", $"{n} saved passwords");
+        }, null, 10, new Padding(0, 0, 12, 0)));
         LinkLabel clear = null;
         clear = Theme.Link(L("清空", "Clear"), () => { Passwords.Save(new List<string>()); count.Text = L("密码本里有 0 个密码", "0 saved passwords"); clear.Enabled = false; });
         clear.Enabled = saved > 0;
         row.Controls.Add(clear);
         col.Controls.Add(row);
+
+        col.Controls.Add(Theme.RuleLine(new Padding(0, 10, 0, 8)));
+        var lang = Theme.Row(new Padding(0, 3, 0, 3));
+        lang.Controls.Add(Theme.Lbl(L("界面语言", "Language"), Theme.Text, 10, false, new Padding(0, 4, 8, 0)));
+        var langBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
+        string[] codes = { "auto", "zh", "en" };
+        langBox.Items.AddRange(new object[] { L("跟随系统", "System"), "中文", "English" });
+        langBox.SelectedIndex = Math.Max(0, Array.IndexOf(codes, p.Language));
+        var startLang = p.Language;
+        var relaunch = Theme.Link(L("重新打开生效", "Relaunch to apply"), () =>
+        {
+            Process.Start(new ProcessStartInfo(Environment.ProcessPath ?? Application.ExecutablePath) { UseShellExecute = true });
+            Application.Exit();
+        }, null, 10, new Padding(10, 4, 0, 0));
+        relaunch.Visible = false;
+        langBox.SelectedIndexChanged += (_, _) => { p.Language = codes[langBox.SelectedIndex]; p.Save(); relaunch.Visible = p.Language != startLang; };
+        lang.Controls.Add(langBox); lang.Controls.Add(relaunch);
+        col.Controls.Add(lang);
+        var ver = Theme.Row(new Padding(0, 8, 0, 0));
+        ver.Controls.Add(Theme.Lbl($"{AppName} {Updater.CurrentText}", Theme.Secondary, 10));
+        ver.Controls.Add(Theme.Dot());
+        var note = Theme.Lbl("", Theme.Faint, 10, false, new Padding(8, 0, 0, 0));
+        ver.Controls.Add(Theme.Link(L("检查更新", "Check for updates"), () =>
+        {
+            note.Text = L("正在检查…", "Checking…");
+            Updater.Check(true, t => { if (!note.IsDisposed) note.Text = t; });
+        }));
+        ver.Controls.Add(note);
+        col.Controls.Add(ver);
         foreach (Control c in col.Controls) if (c is Panel { Height: 1 } r) r.Width = 380;
         Controls.Add(col);
+        Theme.Apply(this);
+    }
+}
+
+/// 密码本：一个个看、一个个删
+class PasswordBookForm : Form
+{
+    readonly FlowLayoutPanel rows = Theme.Column();
+    readonly HashSet<int> shown = new();
+    List<string> list = Passwords.All();
+
+    public PasswordBookForm()
+    {
+        Text = L("密码本", "Password Book");
+        FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false;
+        StartPosition = FormStartPosition.CenterParent;
+        BackColor = Theme.Bg; Font = Theme.F(10); AutoScaleMode = AutoScaleMode.Dpi;
+        ClientSize = new Size(440, 400);
+        var head = Theme.Lbl(L("遇到加密包时从上往下挨个试；最近用过的排在前面", "Tried in order on encrypted archives; most recent first"), Theme.Faint, 9);
+        head.Location = new Point(20, 16);
+        var box = new Panel { Location = new Point(20, 44), Size = new Size(400, 300), AutoScroll = true, BackColor = Theme.Bg };
+        rows.Location = Point.Empty;
+        box.Controls.Add(rows);
+        var done = Theme.Link(L("完成", "Done"), Close);
+        done.Location = new Point(380, 360);
+        Controls.AddRange(new Control[] { head, box, done });
+        Fill();
+        Theme.Apply(this);
+    }
+
+    void Fill()
+    {
+        rows.SuspendLayout();
+        rows.Controls.Clear();
+        for (int i = 0; i < list.Count; i++)
+        {
+            int k = i;
+            var r = new Panel { Size = new Size(380, 34), BackColor = Theme.Bg, Margin = Padding.Empty };
+            r.Paint += (_, e) => { using var pen = new Pen(Theme.Rule); e.Graphics.DrawLine(pen, 0, r.Height - 1, r.Width, r.Height - 1); };
+            var t = Theme.Lbl(shown.Contains(k) ? list[k] : new string('•', Math.Clamp(list[k].Length, 6, 16)), Theme.Text, 10);
+            t.Font = new Font("Consolas", 10); t.AutoEllipsis = true; t.AutoSize = false; t.SetBounds(0, 8, 250, 20);
+            var show = Theme.Link(shown.Contains(k) ? L("隐藏", "Hide") : L("显示", "Show"), () => { if (!shown.Remove(k)) shown.Add(k); Fill(); }, Theme.Secondary, 9.5f);
+            show.Location = new Point(262, 9);
+            var del = Theme.Link(L("删除", "Delete"), () => { list.RemoveAt(k); shown.Clear(); Passwords.Save(list); Fill(); }, Theme.Error, 9.5f);
+            del.Location = new Point(320, 9);
+            r.Controls.AddRange(new Control[] { t, show, del });
+            rows.Controls.Add(r);
+        }
+        if (list.Count == 0) rows.Controls.Add(Theme.Lbl(L("密码本是空的", "No saved passwords"), Theme.Faint, 10, false, new Padding(0, 8, 0, 0)));
+        rows.ResumeLayout();
     }
 }

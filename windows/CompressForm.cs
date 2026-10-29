@@ -22,6 +22,7 @@ class CompressForm : Form
     readonly FlowLayoutPanel pwExtra = Theme.Column();
     readonly ComboBox split = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
     readonly Label splitHint = Theme.Lbl("", Theme.Faint, 9, false, new Padding(0, 2, 0, 0));
+    readonly CheckBox separate = new() { AutoSize = true };   // 拖进来好几个：每个各压一个包
     LinkLabel go;
 
     public CompressForm(List<string> srcs)
@@ -59,6 +60,12 @@ class CompressForm : Form
             grid.Controls.Add(l); grid.Controls.Add(c);
         }
 
+        if (srcs.Count > 1)
+        {
+            separate.Text = L($"每一项各压一个包（{srcs.Count} 个）", $"One archive per item ({srcs.Count})");
+            separate.CheckedChanged += (_, _) => { name.Enabled = !separate.Checked; name.PlaceholderText = separate.Checked ? L("各用自己的名字", "Each keeps its own name") : CompressOptions.DefaultName(srcs); };
+            Row(L("打包", "Pack"), separate);
+        }
         name.PlaceholderText = CompressOptions.DefaultName(srcs);
         var nameRow = Theme.Row(); nameRow.Controls.Add(name); nameRow.Controls.Add(ext);
         Row(L("名字", "Name"), nameRow);
@@ -101,6 +108,7 @@ class CompressForm : Form
         col.Controls.Add(buttons);
         foreach (var l in new[] { formatHint, pwHint, splitHint }) l.MaximumSize = new Size(400, 0);
         Controls.Add(col);
+        Theme.Apply(this);
         Sync();
 
         Shown += async (_, _) => { long n = await Task.Run(() => srcs.Sum(Fs.SizeOf)); if (!IsDisposed) size.Text = Bytes(n); name.Focus(); };
@@ -134,7 +142,12 @@ class CompressForm : Form
         o.EncryptNames = encryptNames.Checked;
         o.SplitMB = CompressOptions.Splits[Math.Max(0, split.SelectedIndex)].Item1;
         if (o.Password.Length > 0 && remember.Checked) Passwords.Remember(o.Password);
-        JobQueue.Shared.Add(new Job(JobKind.Compress, srcs, options: o));
+        if (separate.Checked)
+        {
+            o.Name = "";
+            foreach (var one in srcs) JobQueue.Shared.Add(new Job(JobKind.Compress, new List<string> { one }, options: o));
+        }
+        else JobQueue.Shared.Add(new Job(JobKind.Compress, srcs, options: o));
         Close();
     }
 }

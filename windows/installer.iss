@@ -46,6 +46,8 @@ zh.AppTitle=解压
 en.AppTitle=Unpack
 zh.Browse=用「解压」查看内容
 en.Browse=Browse with Unpack
+zh.ExtractTo=用「解压」解压到…
+en.ExtractTo=Extract with Unpack to…
 zh.SetDefault=打开「默认应用」设置，把 zip、rar、7z 改成用「解压」打开（Windows 不允许安装程序替你改，点一下就好）
 en.SetDefault=Open Default apps settings to make Unpack the default for zip, rar, 7z (Windows doesn't let installers do this)
 
@@ -72,6 +74,9 @@ Root: HKA; Subkey: "Software\Classes\Unpack.Archive\shell\open\command"; ValueTy
 Root: HKA; Subkey: "Software\Classes\Unpack.Archive\shell\browse"; ValueType: string; ValueName: ""; ValueData: "{cm:Browse}"
 Root: HKA; Subkey: "Software\Classes\Unpack.Archive\shell\browse"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\解压.exe"",0"
 Root: HKA; Subkey: "Software\Classes\Unpack.Archive\shell\browse\command"; ValueType: string; ValueName: ""; ValueData: """{app}\解压.exe"" --browse ""%1"""
+Root: HKA; Subkey: "Software\Classes\Unpack.Archive\shell\extractto"; ValueType: string; ValueName: ""; ValueData: "{cm:ExtractTo}"
+Root: HKA; Subkey: "Software\Classes\Unpack.Archive\shell\extractto"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\解压.exe"",0"
+Root: HKA; Subkey: "Software\Classes\Unpack.Archive\shell\extractto\command"; ValueType: string; ValueName: ""; ValueData: """{app}\解压.exe"" --to ""%1"""
 Root: HKA; Subkey: "Software\Classes\Applications\解压.exe"; ValueType: string; ValueName: "FriendlyAppName"; ValueData: "{cm:AppTitle}"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Applications\解压.exe\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\解压.exe"" ""%1"""
 ; 让「设置 → 应用 → 默认应用」里能找到「解压」
@@ -159,6 +164,26 @@ Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.cab\shell\UnpackBro
 Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.wim\shell\UnpackBrowse"; Flags: uninsdeletekey dontcreatekey
 Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.lzh\shell\UnpackBrowse"; Flags: uninsdeletekey dontcreatekey
 Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.arj\shell\UnpackBrowse"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.zip\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.7z\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.rar\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.tar\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.gz\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.tgz\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.bz2\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.tbz2\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.xz\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.txz\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.zst\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.tzst\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.001\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.iso\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.cab\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.wim\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.lzh\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.arj\shell\UnpackTo"; Flags: uninsdeletekey dontcreatekey
+; 开机自动启动（「自动解开下载」打开过的话）：卸载时删掉
+Root: HKA; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Unpack"; Flags: uninsdeletevalue dontcreatekey
 ; 从 v1.0 zip 版过来、开过右键菜单的：菜单原来指向旧文件夹里的解压.exe，改指到装好的这个（旧文件夹删了也不坏）
 Root: HKA; Subkey: "Software\Classes\*\shell\Unpack"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\解压.exe"",0"; Check: HasMenu('*')
 Root: HKA; Subkey: "Software\Classes\*\shell\Unpack\command"; ValueType: string; ValueName: ""; ValueData: """{app}\解压.exe"" ""%1"""; Check: HasMenu('*')

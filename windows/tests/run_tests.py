@@ -171,6 +171,18 @@ if not any("新加.txt" in l and "AES" in l for l in out.splitlines()): failures
 out = run("edit-split-blocked", [F("split.7z.001")], D("edit"), extra={"UNPACK_EDIT": f"delete{TAB}x"})
 if "BLOCKED" not in out: failures.append("edit-split-blocked: split archive was not blocked")
 
+# 检查完整性：好的过、坏的报错；转格式：7z → zip、zip → 7z，再解回来对一遍
+run("test-ok", [e7], D("test"), pw="abc", extra={"UNPACK_ACTION": "test"})
+bad = os.path.join(FIX, "bad.zip"); shutil.copy(F("plain.zip"), bad)
+d = bytearray(open(bad, "rb").read()); i = d.find("中文".encode()) + 40; d[i:i + 16] = bytes(16); open(bad, "wb").write(d)
+out = run("test-bad", [bad], D("test"), expect_ok=False, extra={"UNPACK_ACTION": "test"})
+run("convert-7z-zip", [F("plain.7z")], D("conv"), extra={"UNPACK_ACTION": "zip"})
+cz = os.path.join(D("conv"), "plain.zip")
+if not os.path.isfile(cz): failures.append("convert-7z-zip: plain.zip not created")
+else:
+    run("convert-roundtrip", [cz], D("convback")); check_tree("convert-roundtrip", os.path.join(D("convback"), "src"), TREE)
+    if any(n.startswith(".转换中") for n in os.listdir(D("conv"))): failures.append("convert: temp folder left behind")
+
 # RAR：机器上有 WinRAR 的 Rar.exe 才测（官方 7-Zip 自带 RAR 解码）
 rar = r"C:\Program Files\WinRAR\Rar.exe"
 if os.path.exists(rar):

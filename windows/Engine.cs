@@ -11,8 +11,12 @@ namespace Unpack;
 
 static class I18n
 {
-    // 界面语言跟随系统：系统界面语言是中文就显示中文，否则英文
-    public static readonly bool IsZh = CultureInfo.CurrentUICulture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase);
+    // 界面语言：默认跟随系统（系统界面语言是中文就显示中文，否则英文）；设置里可以固定成中文或 English，重新打开后生效
+    public static readonly bool IsZh = Prefs.Current.Language switch
+    {
+        "zh" => true, "en" => false,
+        _ => CultureInfo.CurrentUICulture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase),
+    };
     public static string L(string zh, string en) => IsZh ? zh : en;
     public static string AppName => L("解压", "Unpack");
 
@@ -50,6 +54,9 @@ class Prefs
     public string LatestVersion { get; set; } = "";
     public string LatestAsset { get; set; } = "";
     public string ReadySetup { get; set; } = "";    // 已经下好、等关掉时装的新版安装包
+    public string Language { get; set; } = "auto";  // 界面语言：auto 跟随系统 / zh / en
+    public bool Notify { get; set; } = true;        // 窗口不在前面时，解完弹通知
+    public bool WatchDownloads { get; set; } = false; // 自动解开「下载」里新下好的压缩包（开着时；打开后开机自动启动、关窗口收到托盘）
 
     public static readonly string Dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Unpack");
     static readonly string FilePath = Path.Combine(Dir, "settings.json");
@@ -110,7 +117,8 @@ static class Passwords
 
 // ---- 压缩包里的一项 ----
 // Method 比如 "AES-256 Deflate"：往加密 zip 里加文件时沿用同一种加密
-record Entry(int Id, string Path, long Size, bool IsDir, bool Encrypted, string Method = "");
+// Modified：包里记的修改时间
+record Entry(int Id, string Path, long Size, bool IsDir, bool Encrypted, string Method = "", DateTime? Modified = null);
 
 class Listing
 {
@@ -272,7 +280,8 @@ static class SevenZip
             f.TryGetValue("Attributes", out var attr);
             listing.Entries.Add(new Entry(listing.Entries.Count, path, long.TryParse(size, out var sz) ? sz : 0,
                 f.GetValueOrDefault("Folder") == "+" || (attr ?? "").StartsWith("D"), f.GetValueOrDefault("Encrypted") == "+",
-                f.GetValueOrDefault("Method") ?? ""));
+                f.GetValueOrDefault("Method") ?? "",
+                DateTime.TryParseExact((f.GetValueOrDefault("Modified") ?? "").Split('.')[0], "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out var m) ? m : null));
         }
         return listing;
     }
@@ -560,9 +569,11 @@ static class Engine
         return Writable(beside) ? beside : Downloads;
     }
 
-    public static Result<string> Extract(string arc, string password, Listing listing, List<string> selection, int? cp, Runner runner, Action<Progress> progress)
+    /// into：解到哪个文件夹（null = 设置里的位置）；wrap = false 时零散的多个也直接放进 into，不另建文件夹（转格式用）
+    public static Result<string> Extract(string arc, string password, Listing listing, List<string> selection, int? cp, Runner runner, Action<Progress> progress,
+                                         string into = null, bool wrap = true)
     {
-        var parent = DestDir(arc);
+        var parent = into ?? DestDir(arc);
         long need = selection == null ? listing.TotalSize : listing.Entries.Where(e => selection.Contains(e.Path)).Sum(e => e.Size);
         try
         {
@@ -618,6 +629,11 @@ static class Engine
                 final = Fs.Unique(Path.Combine(parent, Path.GetFileName(items[0])));
                 Fs.Move(items[0], final);
             }
+            else if (!wrap)
+            {
+                final = parent;
+                foreach (var u in items) Fs.Move(u, Fs.Unique(Path.Combine(parent, Path.GetFileName(u))));
+            }
             else
             {
                 final = Fs.Unique(Path.Combine(parent, Archive.BaseName(arc)));
@@ -636,9 +652,9 @@ static class Engine
         }
     }
 
-    public static Result<string> Compress(List<string> srcs, CompressOptions o, Runner runner, Action<Progress> progress)
+    public static Result<string> Compress(List<string> srcs, CompressOptions o, Runner runner, Action<Progress> progress, string outDir = null)
     {
-        var parent = DestDir(srcs[0]);
+        var parent = outDir ?? DestDir(srcs[0]);
         var name = string.IsNullOrWhiteSpace(o.Name) ? CompressOptions.DefaultName(srcs) : o.Name;
         // 分卷时实际文件是 名字.zip.001、.002…：编号要躲开这些已经存在的
         var output = Path.Combine(parent, $"{name}.{o.Format}");
@@ -667,6 +683,35 @@ static class Engine
         // 设了分卷但没超过一卷：7-Zip 也会出一个 .001，改回正常名字
         if (o.SplitMB > 0 && parts.Count == 1) { try { File.Move(parts[0], output); } catch { } }
         return Result<string>.Success(o.SplitMB > 0 && parts.Count > 1 ? parts[0] : output);
+    }
+
+    /// 检查完整性：7-Zip 把每个文件都解一遍、对校验码，不写到盘上
+    public static Result<string> Test(string arc, string password, Listing listing, int? cp, Runner runner, Action<Progress> progress)
+    {
+        var args = new List<string> { "t", "-bsp1", "-bso0", "-bse2", "-sccUTF-8", "-p" + (password ?? "") };
+        args.AddRange(SevenZip.Cp(cp));
+        args.Add(arc);
+        var r = Run7z(args, listing.TotalSize, I18n.L("检查", "Checking"), runner, progress);
+        return r.Code == 0 ? Result<string>.Success(arc) : Result<string>.Fail(SevenZip.Classify(r, runner));
+    }
+
+    /// 转格式：整包解到旁边的隐藏临时文件夹，再压成 zip / 7z（压缩程度用设置里的），放在原包旁边
+    public static Result<string> Convert(string arc, string format, string password, Listing listing, int? cp, Runner runner, Action<Progress> progress)
+    {
+        var parent = DestDir(arc);
+        var tmp = Path.Combine(parent, ".转换中-" + Guid.NewGuid().ToString("N")[..8]);
+        try
+        {
+            try { Directory.CreateDirectory(tmp); File.SetAttributes(tmp, FileAttributes.Directory | FileAttributes.Hidden); }
+            catch { return Result<string>.Fail(new ZError(ZKind.Failed, I18n.L($"没法在「{Path.GetFileName(parent)}」里写文件", $"Can't write to “{Path.GetFileName(parent)}”"))); }
+            var x = Extract(arc, password, listing, null, cp, runner, p => progress?.Invoke(new Progress(p.Fraction / 2, p.Text)), tmp, false);
+            if (!x.Ok) return x;
+            var o = CompressOptions.FromPrefs();
+            o.Format = format;
+            o.Name = Archive.BaseName(arc);
+            return Compress(Visible(tmp), o, runner, p => progress?.Invoke(new Progress(0.5 + p.Fraction / 2, p.Text)), parent);
+        }
+        finally { try { if (Directory.Exists(tmp)) Directory.Delete(tmp, true); } catch { } }
     }
 
     static readonly Regex Pct = new(@"(\d+)%");

@@ -7,7 +7,7 @@ APP="build/解压.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swiftc -O -parse-as-library -swift-version 5 -target arm64-apple-macos15.0 \
-  -framework QuickLook -framework Security \
+  -framework QuickLook -framework Security -framework UserNotifications -framework ServiceManagement \
   Unpack.swift -o "$APP/Contents/MacOS/Unpack"
 # 引擎：7-Zip 命令行版（vendor/7zz，取自 Homebrew 的 sevenzip，LGPL）；RAR 用 unar（vendor/unar，取自 Homebrew，LGPL，只依赖系统库）
 cp vendor/7zz vendor/unar "$APP/Contents/Resources/"
@@ -30,6 +30,8 @@ printf '"用「解压」处理" = "用「解压」处理";\n' > "$APP/Contents/R
 printf '"用「解压」处理" = "Unpack or Zip";\n' > "$APP/Contents/Resources/en.lproj/ServicesMenu.strings"
 printf '"用「解压」查看内容" = "用「解压」查看内容";\n' >> "$APP/Contents/Resources/zh-Hans.lproj/ServicesMenu.strings"
 printf '"用「解压」查看内容" = "Browse with Unpack";\n' >> "$APP/Contents/Resources/en.lproj/ServicesMenu.strings"
+printf '"用「解压」解压到…" = "用「解压」解压到…";\n' >> "$APP/Contents/Resources/zh-Hans.lproj/ServicesMenu.strings"
+printf '"用「解压」解压到…" = "Extract with Unpack to…";\n' >> "$APP/Contents/Resources/en.lproj/ServicesMenu.strings"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -81,6 +83,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
       <key>NSSendFileTypes</key><array><string>public.item</string></array>
     </dict>
     <!-- 右键 →「用「解压」查看内容」：不解开，先看里面有什么、可以改 -->
+    <dict>
+      <key>NSMessage</key><string>extractTo</string>
+      <key>NSMenuItem</key><dict><key>default</key><string>用「解压」解压到…</string></dict>
+      <key>NSRequiredContext</key><dict/>
+      <key>NSSendFileTypes</key><array><string>public.archive</string><string>public.zip-archive</string></array>
+    </dict>
     <dict>
       <key>NSMessage</key><string>browseFiles</string>
       <key>NSMenuItem</key><dict><key>default</key><string>用「解压」查看内容</string></dict>
