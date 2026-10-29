@@ -111,7 +111,7 @@ jobs:
           Set-Content "$env:APPDATA\Unpack\settings.json" '{"Reveal": false}'
           if (Test-Path "$wd\新下的.zip") { throw "watch: new archive not extracted/recycled" }
           if (!(Test-Path "$wd\已经在的.zip")) { throw "watch: existing archive was touched" }
-          if (!(Test-Path "$wd\a.txt")) { throw "watch: extracted file missing" }
+          if (!(Test-Path "$wd\demo\a.txt")) { throw "watch: extracted file missing" }   # photos.zip 里存的是 demo\a.txt
           Set-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name AppsUseLightTheme -Value 1 -Type DWord -Force
 
       - name: Build installer
